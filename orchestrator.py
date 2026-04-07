@@ -14,7 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable
 
 
-CONTINUE_PROMPT = "Sleep complete, this is orchestrator resuming your execution. Please continue."
+CONTINUE_PROMPT = "[Automated Message] Sleep complete."
 LOG = logging.getLogger("orchestrator")
 SLEEP_CALL_PATTERN = re.compile(r"(curl|httpie|http)\b.*?/sleep\b|/sleep\b.*?(curl|httpie|http)", re.IGNORECASE)
 
