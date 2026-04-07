@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 import subprocess
 import threading
 import time
@@ -15,6 +16,7 @@ from typing import Callable
 
 CONTINUE_PROMPT = "Sleep complete, this is orchestrator resuming your execution. Please continue."
 LOG = logging.getLogger("orchestrator")
+SLEEP_CALL_PATTERN = re.compile(r"(curl|httpie|http)\b.*?/sleep\b|/sleep\b.*?(curl|httpie|http)", re.IGNORECASE)
 
 
 class OrchestratorError(RuntimeError):
@@ -22,63 +24,166 @@ class OrchestratorError(RuntimeError):
 
 
 @dataclass
-class TmuxCodexController:
-    tmux_session: str
+class TmuxPane:
+    pane_id: str
+    current_command: str
+    is_active: bool
+    is_dead: bool
+    activity_epoch: int
+
+
+@dataclass
+class TmuxSender:
     send_spacing_seconds: float = 0.5
     sleep_fn: Callable[[float], None] = time.sleep
 
-    def send_prompt(self, prompt: str) -> None:
-        self._tmux(["send-keys", "-t", self.tmux_session, prompt])
+    def send_prompt(self, target: str, prompt: str) -> None:
+        self._tmux(["send-keys", "-t", target, prompt])
         self.sleep_fn(self.send_spacing_seconds)
-        self._tmux(["send-keys", "-t", self.tmux_session, "Enter"])
+        self._tmux(["send-keys", "-t", target, "Enter"])
 
     def _tmux(self, args: list[str]) -> subprocess.CompletedProcess[str]:
         return subprocess.run(["tmux", *args], check=True, text=True, capture_output=False)
 
 
+@dataclass
+class FixedTmuxTargetResolver:
+    target: str
+
+    def resolve_target(self) -> str:
+        return self.target
+
+
+@dataclass
+class AutoTmuxTargetResolver:
+    capture_lines: int = 120
+    min_score: int = 1
+    list_panes_fn: Callable[[], list[TmuxPane]] | None = None
+    capture_pane_fn: Callable[[str, int], str] | None = None
+
+    def resolve_target(self) -> str:
+        panes = self._list_panes()
+        best_pane: TmuxPane | None = None
+        best_rank: tuple[int, int, int, int] | None = None
+
+        for pane in panes:
+            rank = self._rank_pane(pane)
+            if rank is None:
+                continue
+            if best_rank is None or rank > best_rank:
+                best_rank = rank
+                best_pane = pane
+
+        if best_pane is None or best_rank is None:
+            raise OrchestratorError("Could not detect a tmux pane that recently called /sleep.")
+
+        LOG.info("Auto-detected tmux caller pane %s with rank %s", best_pane.pane_id, best_rank)
+        return best_pane.pane_id
+
+    def _rank_pane(self, pane: TmuxPane) -> tuple[int, int, int, int] | None:
+        if pane.is_dead:
+            return None
+
+        transcript = self._capture_pane(pane.pane_id)
+        lines = [line.strip() for line in transcript.splitlines() if line.strip()]
+        match_offsets = [offset for offset, line in enumerate(reversed(lines)) if SLEEP_CALL_PATTERN.search(line)]
+        if not match_offsets:
+            return None
+
+        latest_offset = match_offsets[0]
+        preferred_command = int(pane.current_command.lower() in {"codex", "python", "bash", "zsh", "fish"})
+
+        # Prefer the pane whose /sleep call is closest to the live bottom of scrollback.
+        # General pane activity is only a tie-breaker when the visible /sleep recency is the same.
+        return (-latest_offset, int(pane.is_active), pane.activity_epoch, preferred_command)
+
+    def _list_panes(self) -> list[TmuxPane]:
+        if self.list_panes_fn is not None:
+            return self.list_panes_fn()
+
+        result = subprocess.run(
+            [
+                "tmux",
+                "list-panes",
+                "-a",
+                "-F",
+                "#{pane_id}\t#{pane_current_command}\t#{pane_active}\t#{pane_dead}\t#{pane_activity}",
+            ],
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+        panes: list[TmuxPane] = []
+        for raw_line in result.stdout.splitlines():
+            pane_id, command, is_active, is_dead, activity_epoch = raw_line.split("\t", 4)
+            panes.append(
+                TmuxPane(
+                    pane_id=pane_id,
+                    current_command=command,
+                    is_active=is_active == "1",
+                    is_dead=is_dead == "1",
+                    activity_epoch=int(activity_epoch or 0),
+                )
+            )
+        return panes
+
+    def _capture_pane(self, pane_id: str) -> str:
+        if self.capture_pane_fn is not None:
+            return self.capture_pane_fn(pane_id, self.capture_lines)
+
+        result = subprocess.run(
+            ["tmux", "capture-pane", "-p", "-t", pane_id, "-S", f"-{self.capture_lines}"],
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+        return result.stdout
+
+
 class SleepCoordinator:
     def __init__(
         self,
-        controller: TmuxCodexController,
+        sender: TmuxSender,
+        target_resolver: FixedTmuxTargetResolver | AutoTmuxTargetResolver,
         *,
         continue_prompt: str = CONTINUE_PROMPT,
         sleep_fn: Callable[[float], None] = time.sleep,
     ) -> None:
-        self._controller = controller
+        self._sender = sender
+        self._target_resolver = target_resolver
         self._continue_prompt = continue_prompt
         self._sleep_fn = sleep_fn
         self._lock = threading.Lock()
-        self._worker: threading.Thread | None = None
-        self._active = False
+        self._workers: dict[str, threading.Thread] = {}
 
     def request_sleep(self, seconds: float) -> dict[str, object]:
         if seconds <= 0:
             raise OrchestratorError("Sleep duration must be positive.")
         with self._lock:
-            if self._active:
-                raise OrchestratorError("A sleep request is already active.")
-            self._active = True
-            self._worker = threading.Thread(
+            target = self._target_resolver.resolve_target()
+            if target in self._workers:
+                raise OrchestratorError(f"A sleep request is already active for tmux target {target}.")
+            worker = threading.Thread(
                 target=self._sleep_and_continue,
-                args=(seconds,),
+                args=(seconds, target),
                 name="sleep-and-continue",
                 daemon=True,
             )
-            self._worker.start()
-        return {"accepted": True, "seconds": seconds}
+            self._workers[target] = worker
+            worker.start()
+        return {"accepted": True, "seconds": seconds, "target": target}
 
-    def _sleep_and_continue(self, seconds: float) -> None:
+    def _sleep_and_continue(self, seconds: float, target: str) -> None:
         try:
-            LOG.info("Sleeping for %s seconds before continuing tmux session", seconds)
+            LOG.info("Sleeping for %s seconds before continuing tmux target %s", seconds, target)
             self._sleep_fn(seconds)
-            self._controller.send_prompt(self._continue_prompt)
-            LOG.info("Sent continuation prompt to tmux session")
+            self._sender.send_prompt(target, self._continue_prompt)
+            LOG.info("Sent continuation prompt to tmux target %s", target)
         except Exception:
             LOG.exception("Sleep/continue cycle failed")
         finally:
             with self._lock:
-                self._active = False
-                self._worker = None
+                self._workers.pop(target, None)
 
 
 class OrchestratorHandler(BaseHTTPRequestHandler):
@@ -146,7 +251,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Minimal tmux-backed Codex sleep/continue orchestrator.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
-    parser.add_argument("--tmux-session", default="tmux-codex")
+    parser.add_argument("--tmux-target", help="Explicit tmux pane/session/window target. If omitted, auto-detect the caller pane.")
+    parser.add_argument("--capture-lines", type=int, default=120, help="Number of lines to inspect from each tmux pane during auto-detection.")
     parser.add_argument("--log-level", default="INFO")
     return parser.parse_args()
 
@@ -157,10 +263,19 @@ def main() -> None:
         level=getattr(logging, args.log_level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    controller = TmuxCodexController(tmux_session=args.tmux_session)
-    coordinator = SleepCoordinator(controller)
+    sender = TmuxSender()
+    if args.tmux_target:
+        target_resolver: FixedTmuxTargetResolver | AutoTmuxTargetResolver = FixedTmuxTargetResolver(args.tmux_target)
+    else:
+        target_resolver = AutoTmuxTargetResolver(capture_lines=args.capture_lines)
+    coordinator = SleepCoordinator(sender, target_resolver)
     server = ThreadingHTTPServer((args.host, args.port), build_handler(coordinator))
-    LOG.info("Listening on http://%s:%s/sleep for tmux session %s", args.host, args.port, args.tmux_session)
+    LOG.info(
+        "Listening on http://%s:%s/sleep using %s",
+        args.host,
+        args.port,
+        f"fixed tmux target {args.tmux_target}" if args.tmux_target else "auto tmux pane detection",
+    )
     try:
         server.serve_forever()
     except KeyboardInterrupt:
