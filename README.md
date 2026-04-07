@@ -2,7 +2,7 @@
 
 This is a tmux-aware CLI for pausing a Codex agent and resuming it later in the same pane.
 
-There is no long-lived server anymore. Each `sleep` command records timer state for the current `TMUX_PANE`, then spawns a detached worker process that waits in the background and later sends:
+Each `sleep` command records timer state for the current `TMUX_PANE`, then spawns a detached worker process that waits in the background and later sends:
 
 ```text
 [Automated Message] Sleep complete.
@@ -14,7 +14,7 @@ Codex plugins are discovered through a marketplace registry file. For a home-loc
 
 Recommended layout:
 
-1. Copy this repo to `~/plugins/codex-orchestrator`
+1. Copy this repo to `~/codex-plugins/codex-orchestrator`
 2. Create `~/.agents/plugins/marketplace.json`
 3. Register the plugin as a local source
 4. Start a new Codex session so plugin discovery reloads
@@ -32,7 +32,7 @@ Example marketplace file:
       "name": "codex-orchestrator",
       "source": {
         "source": "local",
-        "path": "./plugins/codex-orchestrator"
+        "path": "./codex-plugins/codex-orchestrator"
       },
       "policy": {
         "installation": "AVAILABLE",
@@ -59,7 +59,12 @@ python orchestrator.py get
 python orchestrator.py cancel
 ```
 
-All commands expect to run inside tmux so `TMUX_PANE` is available. For testing, you can override the pane manually:
+`sleep` and `cancel` expect to run inside tmux so `TMUX_PANE` is available. `get` behaves differently:
+
+- Inside tmux, `get` reports the pending timer for the current pane, including overdue timers that have not been processed by the worker yet.
+- Outside tmux, `get` lists all pending timers in the state directory for admin use, including overdue timers that have not been processed by the worker yet.
+
+For testing, you can override the pane manually:
 
 ```bash
 python orchestrator.py sleep 600 --tmux-pane %3
@@ -71,9 +76,10 @@ python orchestrator.py cancel --tmux-pane %3
 
 1. `sleep` starts a detached worker for the current pane.
 2. If that pane already has an active timer, `sleep` fails.
-3. `get` reports the next wake time for the current pane, if any.
-4. `cancel` cancels the active timer for the current pane.
-5. When the timer expires, the worker sends the wake prompt into that pane and clears its state.
+3. `get` reports the pending timer for the current pane when run inside tmux, including overdue timers awaiting worker delivery.
+4. `get` lists all pending timers when run outside tmux, including overdue timers awaiting worker delivery.
+5. `cancel` cancels the active timer for the current pane.
+6. When the timer expires, the worker sends the wake prompt into that pane and clears its state.
 
 State files live under `$XDG_RUNTIME_DIR/codex-orchestrator` when available, otherwise under the system temp directory.
 
@@ -89,6 +95,12 @@ Check it:
 
 ```bash
 python orchestrator.py get
+```
+
+List all active timers outside tmux:
+
+```bash
+env -u TMUX_PANE python orchestrator.py get
 ```
 
 Cancel it:

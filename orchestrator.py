@@ -138,17 +138,35 @@ class TimerManager:
             state = self._load_state(state_path)
             if state is None:
                 return {"active": False, "target": pane_id}
-            if state.wake_at <= self._time_fn():
-                self._clear_state(state_path)
-                return {"active": False, "target": pane_id}
 
             seconds_remaining = max(0.0, state.wake_at - self._time_fn())
         return {
             "active": True,
+            "expired": state.wake_at <= self._time_fn(),
             "target": pane_id,
             "wake_at": state.wake_at,
             "seconds_remaining": seconds_remaining,
         }
+
+    def list_active_timers(self) -> dict[str, object]:
+        active_timers: list[dict[str, object]] = []
+        for state_path in sorted(self._state_dir.glob("*.json")):
+            with self._locked_state_path(state_path):
+                state = self._load_state(state_path)
+                if state is None:
+                    continue
+
+                seconds_remaining = max(0.0, state.wake_at - self._time_fn())
+                active_timers.append(
+                    {
+                        "target": state.pane_id,
+                        "wake_at": state.wake_at,
+                        "seconds_remaining": seconds_remaining,
+                        "expired": state.wake_at <= self._time_fn(),
+                        "namespace": self._namespace_for_state_path(state_path),
+                    }
+                )
+        return {"active_timers": active_timers, "count": len(active_timers)}
 
     def cancel_timer(self, pane_id: str) -> dict[str, object]:
         state_path = self._state_path(pane_id)
@@ -189,6 +207,10 @@ class TimerManager:
         tmux_socket = os.environ.get("TMUX", "").split(",", 1)[0] or "no-tmux"
         digest = hashlib.sha256(tmux_socket.encode("utf-8")).hexdigest()[:16]
         return f"tmux-{digest}"
+
+    @staticmethod
+    def _namespace_for_state_path(state_path: Path) -> str:
+        return state_path.stem.split("__", 1)[0]
 
     @contextmanager
     def _locked_state_path(self, state_path: Path):
@@ -342,7 +364,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "sleep":
             payload = manager.sleep_timer(args.seconds, resolve_tmux_pane(args.tmux_pane), prompt=args.prompt)
         elif args.command == "get":
-            payload = manager.get_timer(resolve_tmux_pane(args.tmux_pane))
+            pane_id = args.tmux_pane or os.environ.get("TMUX_PANE")
+            if pane_id:
+                payload = manager.get_timer(pane_id)
+            else:
+                payload = manager.list_active_timers()
         elif args.command == "cancel":
             payload = manager.cancel_timer(resolve_tmux_pane(args.tmux_pane))
         elif args.command == "_worker":

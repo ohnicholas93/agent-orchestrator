@@ -71,7 +71,41 @@ class TimerManagerTests(unittest.TestCase):
 
         self.assertEqual(status["target"], "%1")
         self.assertTrue(status["active"])
+        self.assertFalse(status["expired"])
         self.assertEqual(status["seconds_remaining"], 6.0)
+
+    def test_get_timer_reports_expired_timer_without_clearing_state(self) -> None:
+        self.manager.sleep_timer(3, "%1")
+        state_path = self.manager._state_path("%1")
+        self.now = 1_004.0
+
+        status = self.manager.get_timer("%1")
+
+        self.assertEqual(
+            status,
+            {
+                "active": True,
+                "expired": True,
+                "target": "%1",
+                "wake_at": 1_003.0,
+                "seconds_remaining": 0.0,
+            },
+        )
+        self.assertTrue(state_path.exists())
+
+    def test_get_timer_does_not_prevent_worker_prompt_for_expired_timer(self) -> None:
+        self.manager.sleep_timer(3, "%1")
+        state_path = self.manager._state_path("%1")
+        state = self.manager._load_state(state_path)
+        assert state is not None
+        self.now = 1_004.0
+
+        self.manager.get_timer("%1")
+        result = self.manager.run_worker("%1", state.wake_at, state.token, state_path, CONTINUE_PROMPT)
+
+        self.assertEqual(result, 0)
+        self.assertEqual(self.sender.prompts, [("%1", CONTINUE_PROMPT)])
+        self.assertFalse(state_path.exists())
 
     def test_cancel_timer_clears_state(self) -> None:
         self.manager.sleep_timer(10, "%1")
@@ -80,6 +114,72 @@ class TimerManagerTests(unittest.TestCase):
         result = self.manager.cancel_timer("%1")
 
         self.assertEqual(result, {"cancelled": True, "target": "%1"})
+        self.assertFalse(state_path.exists())
+
+    def test_list_active_timers_returns_all_active_timers(self) -> None:
+        self.manager.sleep_timer(5, "%1")
+        self.manager.sleep_timer(8, "%2")
+        self.now = 1_002.0
+
+        result = self.manager.list_active_timers()
+
+        self.assertEqual(result["count"], 2)
+        self.assertEqual(
+            result["active_timers"],
+            [
+                {
+                    "target": "%1",
+                    "wake_at": 1_005.0,
+                    "seconds_remaining": 3.0,
+                    "expired": False,
+                    "namespace": self.manager._state_namespace(),
+                },
+                {
+                    "target": "%2",
+                    "wake_at": 1_008.0,
+                    "seconds_remaining": 6.0,
+                    "expired": False,
+                    "namespace": self.manager._state_namespace(),
+                },
+            ],
+        )
+
+    def test_list_active_timers_reports_expired_timers_without_clearing_state(self) -> None:
+        self.manager.sleep_timer(3, "%1")
+        state_path = self.manager._state_path("%1")
+        self.now = 1_004.0
+
+        result = self.manager.list_active_timers()
+
+        self.assertEqual(
+            result,
+            {
+                "active_timers": [
+                    {
+                        "target": "%1",
+                        "wake_at": 1_003.0,
+                        "seconds_remaining": 0.0,
+                        "expired": True,
+                        "namespace": self.manager._state_namespace(),
+                    }
+                ],
+                "count": 1,
+            },
+        )
+        self.assertTrue(state_path.exists())
+
+    def test_list_active_timers_does_not_prevent_worker_prompt_for_expired_timer(self) -> None:
+        self.manager.sleep_timer(3, "%1")
+        state_path = self.manager._state_path("%1")
+        state = self.manager._load_state(state_path)
+        assert state is not None
+        self.now = 1_004.0
+
+        self.manager.list_active_timers()
+        result = self.manager.run_worker("%1", state.wake_at, state.token, state_path, CONTINUE_PROMPT)
+
+        self.assertEqual(result, 0)
+        self.assertEqual(self.sender.prompts, [("%1", CONTINUE_PROMPT)])
         self.assertFalse(state_path.exists())
 
     def test_run_worker_sends_prompt_and_clears_state(self) -> None:
@@ -294,6 +394,34 @@ class CliTests(unittest.TestCase):
         self.assertEqual(code, 0)
         mock_manager.sleep_timer.assert_called_once_with(30.0, "%9", prompt=CONTINUE_PROMPT)
         mock_print.assert_called_once_with('{"accepted": true, "target": "%9"}')
+
+    @mock.patch("orchestrator.print")
+    @mock.patch("orchestrator.TimerManager")
+    def test_main_get_subcommand_uses_current_tmux_pane_when_available(self, mock_manager_cls, mock_print) -> None:
+        mock_manager = mock_manager_cls.return_value
+        mock_manager.get_timer.return_value = {"active": True, "target": "%9"}
+
+        with mock.patch.dict("os.environ", {"TMUX_PANE": "%9"}, clear=True):
+            code = main(["get"])
+
+        self.assertEqual(code, 0)
+        mock_manager.get_timer.assert_called_once_with("%9")
+        mock_manager.list_active_timers.assert_not_called()
+        mock_print.assert_called_once_with('{"active": true, "target": "%9"}')
+
+    @mock.patch("orchestrator.print")
+    @mock.patch("orchestrator.TimerManager")
+    def test_main_get_subcommand_lists_all_timers_outside_tmux(self, mock_manager_cls, mock_print) -> None:
+        mock_manager = mock_manager_cls.return_value
+        mock_manager.list_active_timers.return_value = {"active_timers": [], "count": 0}
+
+        with mock.patch.dict("os.environ", {}, clear=True):
+            code = main(["get"])
+
+        self.assertEqual(code, 0)
+        mock_manager.list_active_timers.assert_called_once_with()
+        mock_manager.get_timer.assert_not_called()
+        mock_print.assert_called_once_with('{"active_timers": [], "count": 0}')
 
 
 class TmuxSenderTests(unittest.TestCase):
