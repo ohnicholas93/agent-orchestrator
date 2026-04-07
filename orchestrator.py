@@ -18,6 +18,7 @@ from typing import Callable
 
 
 CONTINUE_PROMPT = "[Automated Message] Sleep complete."
+STALE_TIMER_GRACE_SECONDS = 10.0
 LOG = logging.getLogger("orchestrator")
 
 
@@ -74,6 +75,7 @@ class TimerManager:
         script_path: Path | None = None,
         python_executable: str | None = None,
         continue_prompt: str = CONTINUE_PROMPT,
+        background_worker_check: Callable[[], None] | None = None,
     ) -> None:
         self._sender = sender
         self._state_dir = state_dir
@@ -83,6 +85,7 @@ class TimerManager:
         self._script_path = script_path or Path(__file__).resolve()
         self._python_executable = python_executable or sys.executable
         self._continue_prompt = continue_prompt
+        self._background_worker_check = background_worker_check or self._verify_background_worker_capability
 
     def sleep_timer(self, seconds: float, pane_id: str, *, prompt: str | None = None) -> dict[str, object]:
         if seconds <= 0:
@@ -91,11 +94,14 @@ class TimerManager:
         state_path = self._state_path(pane_id)
         with self._locked_state_path(state_path):
             existing = self._load_state(state_path)
-            if existing is not None and existing.wake_at > self._time_fn():
-                raise OrchestratorError(f"A sleep request is already active for tmux target {pane_id}.")
+            if existing is not None:
+                age_past_due = self._time_fn() - existing.wake_at
+                if age_past_due <= STALE_TIMER_GRACE_SECONDS:
+                    raise OrchestratorError(f"A sleep request is already active for tmux target {pane_id}.")
             if existing is not None:
                 self._clear_state(state_path)
 
+            self._background_worker_check()
             state = TimerState(
                 pane_id=pane_id,
                 token=uuid.uuid4().hex,
@@ -148,12 +154,17 @@ class TimerManager:
             "seconds_remaining": seconds_remaining,
         }
 
-    def list_active_timers(self) -> dict[str, object]:
+    def list_active_timers(self, *, stale_grace_seconds: float | None = None) -> dict[str, object]:
         active_timers: list[dict[str, object]] = []
         for state_path in sorted(self._state_dir.glob("*.json")):
             with self._locked_state_path(state_path):
                 state = self._load_state(state_path)
                 if state is None:
+                    continue
+
+                age_past_due = self._time_fn() - state.wake_at
+                if stale_grace_seconds is not None and age_past_due > stale_grace_seconds:
+                    self._clear_state(state_path)
                     continue
 
                 seconds_remaining = max(0.0, state.wake_at - self._time_fn())
@@ -314,6 +325,20 @@ class TimerManager:
                 close_fds=True,
             )
 
+    @staticmethod
+    def _verify_background_worker_capability() -> None:
+        if os.environ.get("CODEX_CI") != "1":
+            return
+        try:
+            proc1 = Path("/proc/1/cmdline").read_bytes().decode("utf-8", "replace")
+        except OSError:
+            proc1 = ""
+        if "codex-linux-sandbox" in proc1:
+            raise OrchestratorError(
+                "Cannot start a reliable background timer from the current Codex sandbox. "
+                "Ask the user to approve escalation, then retry the sleep command."
+            )
+
 
 def resolve_tmux_pane(explicit_pane: str | None) -> str:
     pane_id = explicit_pane or os.environ.get("TMUX_PANE")
@@ -368,7 +393,7 @@ def main(argv: list[str] | None = None) -> int:
             if pane_id:
                 payload = manager.get_timer(pane_id)
             else:
-                payload = manager.list_active_timers()
+                payload = manager.list_active_timers(stale_grace_seconds=STALE_TIMER_GRACE_SECONDS)
         elif args.command == "cancel":
             payload = manager.cancel_timer(resolve_tmux_pane(args.tmux_pane))
         elif args.command == "_worker":

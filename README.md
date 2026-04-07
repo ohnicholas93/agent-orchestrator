@@ -61,8 +61,9 @@ python orchestrator.py cancel
 
 `sleep` and `cancel` expect to run inside tmux so `TMUX_PANE` is available. `get` behaves differently:
 
+- In the current Codex sandbox harness, `sleep` fails early with an error telling the agent to request user escalation, because detached background workers are not reliable there.
 - Inside tmux, `get` reports the pending timer for the current pane, including overdue timers that have not been processed by the worker yet.
-- Outside tmux, `get` lists all pending timers in the state directory for admin use, including overdue timers that have not been processed by the worker yet.
+- Outside tmux, `get` lists all pending timers in the state directory for admin use, including overdue timers that have not been processed by the worker yet, and deletes timers only after they have been overdue for more than 10 seconds.
 
 For testing, you can override the pane manually:
 
@@ -75,11 +76,12 @@ python orchestrator.py cancel --tmux-pane %3
 ## Behavior
 
 1. `sleep` starts a detached worker for the current pane.
-2. If that pane already has an active timer, `sleep` fails.
-3. `get` reports the pending timer for the current pane when run inside tmux, including overdue timers awaiting worker delivery.
-4. `get` lists all pending timers when run outside tmux, including overdue timers awaiting worker delivery.
-5. `cancel` cancels the active timer for the current pane.
-6. When the timer expires, the worker sends the wake prompt into that pane and clears its state.
+2. In the current Codex sandbox harness, `sleep` fails early and tells the agent to ask the user for escalation before retrying.
+3. If that pane already has an active timer, or a timer that expired less than 10 seconds ago, `sleep` fails.
+4. `get` reports the pending timer for the current pane when run inside tmux, including overdue timers awaiting worker delivery.
+5. `get` lists all pending timers when run outside tmux, including overdue timers awaiting worker delivery, and cleans up timers that have been stale for more than 10 seconds.
+6. `cancel` cancels the active timer for the current pane.
+7. When the timer expires, the worker sends the wake prompt into that pane and clears its state.
 
 State files live under `$XDG_RUNTIME_DIR/codex-orchestrator` when available, otherwise under the system temp directory.
 

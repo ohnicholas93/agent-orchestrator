@@ -6,7 +6,16 @@ import unittest
 from unittest import mock
 from pathlib import Path
 
-from orchestrator import CONTINUE_PROMPT, OrchestratorError, TimerManager, TimerState, TmuxSender, main, resolve_tmux_pane
+from orchestrator import (
+    CONTINUE_PROMPT,
+    STALE_TIMER_GRACE_SECONDS,
+    OrchestratorError,
+    TimerManager,
+    TimerState,
+    TmuxSender,
+    main,
+    resolve_tmux_pane,
+)
 
 
 class FakeSender:
@@ -37,6 +46,7 @@ class TimerManagerTests(unittest.TestCase):
             spawn_fn=spawn_fn,
             script_path=Path("/tmp/orchestrator.py"),
             python_executable="python",
+            background_worker_check=lambda: None,
         )
 
     def test_sleep_timer_creates_state_and_spawns_worker(self) -> None:
@@ -62,6 +72,68 @@ class TimerManagerTests(unittest.TestCase):
 
         self.assertEqual(first["target"], "%1")
         self.assertEqual(second["target"], "%2")
+
+    def test_sleep_timer_fails_before_writing_state_when_background_worker_is_unreliable(self) -> None:
+        manager = TimerManager(
+            self.sender,
+            state_dir=self.state_dir,
+            time_fn=lambda: self.now,
+            sleep_fn=lambda _seconds: None,
+            spawn_fn=lambda _args: self.fail("spawn_fn should not be called"),
+            background_worker_check=lambda: (_ for _ in ()).throw(
+                OrchestratorError("Ask the user to approve escalation, then retry the sleep command.")
+            ),
+        )
+
+        with self.assertRaisesRegex(OrchestratorError, "approve escalation"):
+            manager.sleep_timer(5, "%1")
+
+        self.assertFalse(self.manager._state_path("%1").exists())
+
+    def test_sleep_timer_reports_existing_active_timer_before_capability_error(self) -> None:
+        self.manager.sleep_timer(5, "%1")
+        manager = TimerManager(
+            self.sender,
+            state_dir=self.state_dir,
+            time_fn=lambda: self.now,
+            sleep_fn=lambda _seconds: None,
+            spawn_fn=lambda _args: self.fail("spawn_fn should not be called"),
+            background_worker_check=lambda: (_ for _ in ()).throw(
+                OrchestratorError("Ask the user to approve escalation, then retry the sleep command.")
+            ),
+        )
+
+        with self.assertRaisesRegex(OrchestratorError, "already active"):
+            manager.sleep_timer(7, "%1")
+
+    def test_sleep_timer_rejects_recently_expired_timer_pending_worker_delivery(self) -> None:
+        self.manager.sleep_timer(3, "%1")
+        state_path = self.manager._state_path("%1")
+        state = self.manager._load_state(state_path)
+        assert state is not None
+        self.now = 1_004.0
+
+        with self.assertRaisesRegex(OrchestratorError, "already active"):
+            self.manager.sleep_timer(7, "%1")
+
+        preserved = self.manager._load_state(state_path)
+        assert preserved is not None
+        self.assertEqual(preserved.token, state.token)
+
+    def test_sleep_timer_replaces_stale_expired_timer_after_grace_period(self) -> None:
+        self.manager.sleep_timer(3, "%1")
+        state_path = self.manager._state_path("%1")
+        state = self.manager._load_state(state_path)
+        assert state is not None
+        self.now = 1_014.1
+
+        result = self.manager.sleep_timer(7, "%1")
+
+        replaced = self.manager._load_state(state_path)
+        assert replaced is not None
+        self.assertEqual(result["target"], "%1")
+        self.assertNotEqual(replaced.token, state.token)
+        self.assertEqual(replaced.wake_at, 1_021.1)
 
     def test_get_timer_returns_active_timer(self) -> None:
         self.manager.sleep_timer(10, "%1")
@@ -182,6 +254,28 @@ class TimerManagerTests(unittest.TestCase):
         self.assertEqual(self.sender.prompts, [("%1", CONTINUE_PROMPT)])
         self.assertFalse(state_path.exists())
 
+    def test_list_active_timers_clears_stale_expired_timers_when_requested(self) -> None:
+        self.manager.sleep_timer(3, "%1")
+        state_path = self.manager._state_path("%1")
+        self.now = 1_014.1
+
+        result = self.manager.list_active_timers(stale_grace_seconds=STALE_TIMER_GRACE_SECONDS)
+
+        self.assertEqual(result, {"active_timers": [], "count": 0})
+        self.assertFalse(state_path.exists())
+
+    def test_list_active_timers_keeps_recently_expired_timers_within_grace_period(self) -> None:
+        self.manager.sleep_timer(3, "%1")
+        state_path = self.manager._state_path("%1")
+        self.now = 1_012.9
+
+        result = self.manager.list_active_timers(stale_grace_seconds=STALE_TIMER_GRACE_SECONDS)
+
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(result["active_timers"][0]["target"], "%1")
+        self.assertTrue(result["active_timers"][0]["expired"])
+        self.assertTrue(state_path.exists())
+
     def test_run_worker_sends_prompt_and_clears_state(self) -> None:
         state_path = self.manager._state_path("%1")
         state = TimerState("%1", "abc", 1_005.0, CONTINUE_PROMPT)
@@ -271,6 +365,7 @@ class TimerManagerTests(unittest.TestCase):
             spawn_fn=spawn_fn,
             script_path=Path("/tmp/orchestrator.py"),
             python_executable="python",
+            background_worker_check=lambda: None,
         )
 
         results: list[dict[str, object]] = []
@@ -397,6 +492,23 @@ class CliTests(unittest.TestCase):
 
     @mock.patch("orchestrator.print")
     @mock.patch("orchestrator.TimerManager")
+    def test_main_sleep_subcommand_reports_capability_error(self, mock_manager_cls, mock_print) -> None:
+        mock_manager = mock_manager_cls.return_value
+        mock_manager.sleep_timer.side_effect = OrchestratorError(
+            "Cannot start a reliable background timer from the current Codex sandbox. "
+            "Ask the user to approve escalation, then retry the sleep command."
+        )
+
+        code = main(["sleep", "30", "--tmux-pane", "%9"])
+
+        self.assertEqual(code, 1)
+        mock_print.assert_called_once_with(
+            '{"error": "Cannot start a reliable background timer from the current Codex sandbox. '
+            'Ask the user to approve escalation, then retry the sleep command."}'
+        )
+
+    @mock.patch("orchestrator.print")
+    @mock.patch("orchestrator.TimerManager")
     def test_main_get_subcommand_uses_current_tmux_pane_when_available(self, mock_manager_cls, mock_print) -> None:
         mock_manager = mock_manager_cls.return_value
         mock_manager.get_timer.return_value = {"active": True, "target": "%9"}
@@ -419,7 +531,7 @@ class CliTests(unittest.TestCase):
             code = main(["get"])
 
         self.assertEqual(code, 0)
-        mock_manager.list_active_timers.assert_called_once_with()
+        mock_manager.list_active_timers.assert_called_once_with(stale_grace_seconds=STALE_TIMER_GRACE_SECONDS)
         mock_manager.get_timer.assert_not_called()
         mock_print.assert_called_once_with('{"active_timers": [], "count": 0}')
 
