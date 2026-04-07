@@ -2,39 +2,47 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
-import re
+import os
 import subprocess
-import threading
+import sys
+import tempfile
 import time
-from dataclasses import dataclass
-from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import uuid
+from contextlib import contextmanager
+from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Callable
 
 
 CONTINUE_PROMPT = "[Automated Message] Sleep complete."
 LOG = logging.getLogger("orchestrator")
-SHELL_SLEEP_CALL_PATTERNS = (
-    re.compile(r"^\s*(?:.+[#$%>]\s+)?curl\b.*?/sleep\b", re.IGNORECASE),
-    re.compile(r"^\s*(?:.+[#$%>]\s+)?http(?:ie)?\b.*?/sleep\b", re.IGNORECASE),
-    re.compile(r"^\s*(?:.+[#$%>]\s+)?python(?:\d+(?:\.\d+)*)?\b.*?/sleep\b", re.IGNORECASE),
-)
 
 
 class OrchestratorError(RuntimeError):
     pass
 
 
+def default_state_dir() -> Path:
+    candidate = Path(tempfile.gettempdir()) / "codex-orchestrator" / f"user-{os.getuid()}"
+    try:
+        candidate.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise OrchestratorError("Could not create a writable state directory for Codex Orchestrator.") from exc
+    return candidate
+
+
+DEFAULT_STATE_DIR = default_state_dir()
+
+
 @dataclass
-class TmuxPane:
+class TimerState:
     pane_id: str
-    session_name: str
-    current_command: str
-    is_active: bool
-    is_dead: bool
-    activity_epoch: int
+    token: str
+    wake_at: float
+    prompt: str
 
 
 @dataclass
@@ -51,259 +59,303 @@ class TmuxSender:
         return subprocess.run(["tmux", *args], check=True, text=True, capture_output=False)
 
 
-@dataclass
-class FixedTmuxTargetResolver:
-    target: str
+class TimerManager:
+    _lock_timeout_seconds = 5.0
+    _stale_lock_seconds = 30.0
 
-    def resolve_target(self) -> str:
-        return self.target
-
-
-@dataclass
-class AutoTmuxTargetResolver:
-    capture_lines: int = 120
-    min_score: int = 1
-    excluded_session_name: str | None = "codex-orchestrator"
-    list_panes_fn: Callable[[], list[TmuxPane]] | None = None
-    capture_pane_fn: Callable[[str, int], str] | None = None
-
-    def resolve_target(self) -> str:
-        panes = self._list_panes()
-        best_pane: TmuxPane | None = None
-        best_rank: tuple[int, int, int, int] | None = None
-
-        for pane in panes:
-            rank = self._rank_pane(pane)
-            if rank is None:
-                continue
-            if best_rank is None or rank > best_rank:
-                best_rank = rank
-                best_pane = pane
-
-        if best_pane is None or best_rank is None:
-            raise OrchestratorError("Could not detect a tmux pane that recently called /sleep.")
-
-        LOG.info("Auto-detected tmux caller pane %s with rank %s", best_pane.pane_id, best_rank)
-        return best_pane.pane_id
-
-    def _rank_pane(self, pane: TmuxPane) -> tuple[int, int, int, int] | None:
-        if pane.is_dead:
-            return None
-        if self.excluded_session_name and pane.session_name == self.excluded_session_name:
-            return None
-
-        transcript = self._capture_pane(pane.pane_id)
-        lines = [line.strip() for line in transcript.splitlines() if line.strip()]
-        match_offsets = [offset for offset, line in enumerate(reversed(lines)) if self._is_sleep_request_line(line)]
-        if not match_offsets:
-            return None
-
-        latest_offset = match_offsets[0]
-        preferred_command = int(pane.current_command.lower() in {"codex", "python", "bash", "zsh", "fish"})
-
-        # Prefer the pane whose /sleep call is closest to the live bottom of scrollback.
-        # General pane activity is only a tie-breaker when the visible /sleep recency is the same.
-        return (-latest_offset, int(pane.is_active), pane.activity_epoch, preferred_command)
-
-    @staticmethod
-    def _is_sleep_request_line(line: str) -> bool:
-        return any(pattern.search(line) for pattern in SHELL_SLEEP_CALL_PATTERNS)
-
-    def _list_panes(self) -> list[TmuxPane]:
-        if self.list_panes_fn is not None:
-            return self.list_panes_fn()
-
-        result = subprocess.run(
-            [
-                "tmux",
-                "list-panes",
-                "-a",
-                "-F",
-                "#{pane_id}\t#{session_name}\t#{pane_current_command}\t#{pane_active}\t#{pane_dead}\t#{pane_activity}",
-            ],
-            check=True,
-            text=True,
-            capture_output=True,
-        )
-        panes: list[TmuxPane] = []
-        for raw_line in result.stdout.splitlines():
-            pane_id, session_name, command, is_active, is_dead, activity_epoch = raw_line.split("\t", 5)
-            panes.append(
-                TmuxPane(
-                    pane_id=pane_id,
-                    session_name=session_name,
-                    current_command=command,
-                    is_active=is_active == "1",
-                    is_dead=is_dead == "1",
-                    activity_epoch=int(activity_epoch or 0),
-                )
-            )
-        return panes
-
-    def _capture_pane(self, pane_id: str) -> str:
-        if self.capture_pane_fn is not None:
-            return self.capture_pane_fn(pane_id, self.capture_lines)
-
-        result = subprocess.run(
-            ["tmux", "capture-pane", "-p", "-t", pane_id, "-S", f"-{self.capture_lines}"],
-            check=True,
-            text=True,
-            capture_output=True,
-        )
-        return result.stdout
-
-
-class SleepCoordinator:
     def __init__(
         self,
         sender: TmuxSender,
-        target_resolver: FixedTmuxTargetResolver | AutoTmuxTargetResolver,
         *,
-        continue_prompt: str = CONTINUE_PROMPT,
+        state_dir: Path = DEFAULT_STATE_DIR,
+        time_fn: Callable[[], float] = time.time,
         sleep_fn: Callable[[float], None] = time.sleep,
+        spawn_fn: Callable[[list[str]], object] | None = None,
+        script_path: Path | None = None,
+        python_executable: str | None = None,
+        continue_prompt: str = CONTINUE_PROMPT,
     ) -> None:
         self._sender = sender
-        self._target_resolver = target_resolver
-        self._continue_prompt = continue_prompt
+        self._state_dir = state_dir
+        self._time_fn = time_fn
         self._sleep_fn = sleep_fn
-        self._lock = threading.Lock()
-        self._workers: dict[str, threading.Thread] = {}
+        self._spawn_fn = spawn_fn or self._spawn_worker
+        self._script_path = script_path or Path(__file__).resolve()
+        self._python_executable = python_executable or sys.executable
+        self._continue_prompt = continue_prompt
 
-    def request_sleep(self, seconds: float) -> dict[str, object]:
+    def sleep_timer(self, seconds: float, pane_id: str, *, prompt: str | None = None) -> dict[str, object]:
         if seconds <= 0:
             raise OrchestratorError("Sleep duration must be positive.")
-        with self._lock:
-            target = self._target_resolver.resolve_target()
-            if target in self._workers:
-                raise OrchestratorError(f"A sleep request is already active for tmux target {target}.")
-            worker = threading.Thread(
-                target=self._sleep_and_continue,
-                args=(seconds, target),
-                name="sleep-and-continue",
-                daemon=True,
+
+        state_path = self._state_path(pane_id)
+        with self._locked_state_path(state_path):
+            existing = self._load_state(state_path)
+            if existing is not None and existing.wake_at > self._time_fn():
+                raise OrchestratorError(f"A sleep request is already active for tmux target {pane_id}.")
+            if existing is not None:
+                self._clear_state(state_path)
+
+            state = TimerState(
+                pane_id=pane_id,
+                token=uuid.uuid4().hex,
+                wake_at=self._time_fn() + seconds,
+                prompt=prompt or self._continue_prompt,
             )
-            self._workers[target] = worker
-            worker.start()
-        return {"accepted": True, "seconds": seconds, "target": target}
+            self._write_state(state_path, state)
 
-    def _sleep_and_continue(self, seconds: float, target: str) -> None:
+            try:
+                self._spawn_fn(
+                    [
+                        self._python_executable,
+                        str(self._script_path),
+                        "_worker",
+                        "--tmux-pane",
+                        pane_id,
+                        "--wake-at",
+                        str(state.wake_at),
+                        "--token",
+                        state.token,
+                        "--state-file",
+                        str(state_path),
+                        "--prompt",
+                        state.prompt,
+                    ]
+                )
+            except Exception:
+                self._clear_state(state_path)
+                raise
+        return {
+            "accepted": True,
+            "seconds": seconds,
+            "target": pane_id,
+            "wake_at": state.wake_at,
+        }
+
+    def get_timer(self, pane_id: str) -> dict[str, object]:
+        state_path = self._state_path(pane_id)
+        with self._locked_state_path(state_path):
+            state = self._load_state(state_path)
+            if state is None:
+                return {"active": False, "target": pane_id}
+            if state.wake_at <= self._time_fn():
+                self._clear_state(state_path)
+                return {"active": False, "target": pane_id}
+
+            seconds_remaining = max(0.0, state.wake_at - self._time_fn())
+        return {
+            "active": True,
+            "target": pane_id,
+            "wake_at": state.wake_at,
+            "seconds_remaining": seconds_remaining,
+        }
+
+    def cancel_timer(self, pane_id: str) -> dict[str, object]:
+        state_path = self._state_path(pane_id)
+        with self._locked_state_path(state_path):
+            state = self._load_state(state_path)
+            if state is None:
+                return {"cancelled": False, "target": pane_id}
+
+            self._clear_state(state_path)
+            return {"cancelled": True, "target": pane_id}
+
+    def run_worker(self, pane_id: str, wake_at: float, token: str, state_file: Path, prompt: str) -> int:
+        remaining = max(0.0, wake_at - self._time_fn())
+        LOG.info("Sleeping for %s seconds before continuing tmux target %s", remaining, pane_id)
+        self._sleep_fn(remaining)
+
+        with self._locked_state_path(state_file):
+            state = self._load_state(state_file)
+            if state is None or state.token != token:
+                LOG.info("Timer for tmux target %s was cancelled or replaced before wake", pane_id)
+                return 0
+
+            self._sender.send_prompt(pane_id, prompt)
+            LOG.info("Sent continuation prompt to tmux target %s", pane_id)
+            self._clear_state(state_file)
+        return 0
+
+    def _state_path(self, pane_id: str) -> Path:
+        pane_key = pane_id.replace("%", "pane-").replace("/", "_")
+        namespace = self._state_namespace()
+        return self._state_dir / f"{namespace}__{pane_key}.json"
+
+    @staticmethod
+    def _lock_path(path: Path) -> Path:
+        return path.with_suffix(".lock")
+
+    def _state_namespace(self) -> str:
+        tmux_socket = os.environ.get("TMUX", "").split(",", 1)[0] or "no-tmux"
+        digest = hashlib.sha256(tmux_socket.encode("utf-8")).hexdigest()[:16]
+        return f"tmux-{digest}"
+
+    @contextmanager
+    def _locked_state_path(self, state_path: Path):
+        lock_path = self._lock_path(state_path)
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        deadline = time.monotonic() + self._lock_timeout_seconds
+        while True:
+            try:
+                fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+                self._write_lock_metadata(fd)
+                break
+            except FileExistsError:
+                if self._is_stale_lock(lock_path):
+                    self._clear_state(lock_path)
+                    continue
+                if time.monotonic() >= deadline:
+                    raise OrchestratorError(f"Timed out waiting for timer lock for tmux target {state_path.stem}.")
+                self._sleep_fn(0.01)
+
         try:
-            LOG.info("Sleeping for %s seconds before continuing tmux target %s", seconds, target)
-            self._sleep_fn(seconds)
-            self._sender.send_prompt(target, self._continue_prompt)
-            LOG.info("Sent continuation prompt to tmux target %s", target)
-        except Exception:
-            LOG.exception("Sleep/continue cycle failed")
+            yield
         finally:
-            with self._lock:
-                self._workers.pop(target, None)
+            os.close(fd)
+            try:
+                lock_path.unlink()
+            except FileNotFoundError:
+                pass
 
+    def _write_lock_metadata(self, fd: int) -> None:
+        payload = json.dumps({"pid": os.getpid(), "created_at": time.time()}).encode("utf-8")
+        os.write(fd, payload)
 
-class OrchestratorHandler(BaseHTTPRequestHandler):
-    coordinator: SleepCoordinator
-
-    def do_POST(self) -> None:  # noqa: N802
-        if self.path != "/sleep":
-            self._send_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
-            return
+    def _is_stale_lock(self, lock_path: Path) -> bool:
+        try:
+            raw = lock_path.read_text(encoding="utf-8")
+        except OSError:
+            return self._lock_age_exceeds_threshold(lock_path)
 
         try:
-            seconds = self._parse_sleep_seconds()
-            payload = self.coordinator.request_sleep(seconds)
-        except OrchestratorError as exc:
-            status = HTTPStatus.CONFLICT if "already active" in str(exc) else HTTPStatus.BAD_REQUEST
-            self._send_json(status, {"error": str(exc)})
-            return
-        except json.JSONDecodeError as exc:
-            self._send_json(HTTPStatus.BAD_REQUEST, {"error": f"Invalid JSON body: {exc}"})
-            return
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return self._lock_age_exceeds_threshold(lock_path)
 
-        self._send_json(HTTPStatus.ACCEPTED, payload)
+        pid = data.get("pid")
+        created_at = data.get("created_at")
+        if not isinstance(pid, int) or not isinstance(created_at, (int, float)):
+            return self._lock_age_exceeds_threshold(lock_path)
+        if time.time() - float(created_at) > self._stale_lock_seconds:
+            return True
+        return not self._pid_exists(pid)
 
-    def log_message(self, format: str, *args) -> None:  # noqa: A003
-        LOG.info("%s - %s", self.address_string(), format % args)
-
-    def _parse_sleep_seconds(self) -> float:
-        length = int(self.headers.get("Content-Length", "0"))
-        raw_body = self.rfile.read(length).decode("utf-8").strip()
-        if not raw_body:
-            raise OrchestratorError("Request body must contain sleep seconds.")
-        content_type = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
-
-        if content_type == "application/json":
-            body = json.loads(raw_body)
-            if not isinstance(body, dict) or "seconds" not in body:
-                raise OrchestratorError("JSON body must be an object with a `seconds` field.")
-            seconds = body["seconds"]
-        else:
-            seconds = raw_body
-
+    def _lock_age_exceeds_threshold(self, lock_path: Path) -> bool:
         try:
-            return float(seconds)
-        except (TypeError, ValueError) as exc:
-            raise OrchestratorError("Sleep seconds must be numeric.") from exc
+            return time.time() - lock_path.stat().st_mtime > self._stale_lock_seconds
+        except FileNotFoundError:
+            return False
 
-    def _send_json(self, status: HTTPStatus, payload: dict[str, object]) -> None:
-        body = json.dumps(payload).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+    @staticmethod
+    def _pid_exists(pid: int) -> bool:
+        if pid <= 0:
+            return False
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+
+    def _load_state(self, path: Path) -> TimerState | None:
+        if not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return TimerState(**data)
+        except (OSError, json.JSONDecodeError, TypeError):
+            return None
+
+    def _write_state(self, path: Path, state: TimerState) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = path.with_suffix(".tmp")
+        temp_path.write_text(json.dumps(asdict(state)), encoding="utf-8")
+        temp_path.replace(path)
+
+    @staticmethod
+    def _clear_state(path: Path) -> None:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+    @staticmethod
+    def _spawn_worker(args: list[str]) -> None:
+        with open(os.devnull, "w", encoding="utf-8") as devnull:
+            subprocess.Popen(
+                args,
+                stdin=subprocess.DEVNULL,
+                stdout=devnull,
+                stderr=devnull,
+                start_new_session=True,
+                close_fds=True,
+            )
 
 
-def build_handler(coordinator: SleepCoordinator) -> type[OrchestratorHandler]:
-    class Handler(OrchestratorHandler):
-        pass
+def resolve_tmux_pane(explicit_pane: str | None) -> str:
+    pane_id = explicit_pane or os.environ.get("TMUX_PANE")
+    if not pane_id:
+        raise OrchestratorError("Could not determine tmux pane. Set TMUX_PANE or pass --tmux-pane.")
+    return pane_id
 
-    Handler.coordinator = coordinator
-    return Handler
 
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Minimal tmux-backed Codex sleep/continue orchestrator.")
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8765)
-    parser.add_argument("--tmux-target", help="Explicit tmux pane/session/window target. If omitted, auto-detect the caller pane.")
-    parser.add_argument("--capture-lines", type=int, default=120, help="Number of lines to inspect from each tmux pane during auto-detection.")
-    parser.add_argument(
-        "--exclude-tmux-session",
-        default="codex-orchestrator",
-        help="Tmux session name to exclude from auto-detection. Set to empty string to disable exclusion.",
-    )
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Tmux-backed Codex sleep orchestrator.")
+    parser.add_argument("--state-dir", type=Path, default=DEFAULT_STATE_DIR)
     parser.add_argument("--log-level", default="INFO")
-    return parser.parse_args()
+
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    sleep_parser = subparsers.add_parser("sleep", help="Start a background timer for the current tmux pane.")
+    sleep_parser.add_argument("seconds", type=float)
+    sleep_parser.add_argument("--tmux-pane")
+    sleep_parser.add_argument("--prompt", default=CONTINUE_PROMPT)
+
+    get_parser = subparsers.add_parser("get", help="Show the active timer for the current tmux pane.")
+    get_parser.add_argument("--tmux-pane")
+
+    cancel_parser = subparsers.add_parser("cancel", help="Cancel the active timer for the current tmux pane.")
+    cancel_parser.add_argument("--tmux-pane")
+
+    worker_parser = subparsers.add_parser("_worker", help=argparse.SUPPRESS)
+    worker_parser.add_argument("--tmux-pane", required=True)
+    worker_parser.add_argument("--wake-at", type=float, required=True)
+    worker_parser.add_argument("--token", required=True)
+    worker_parser.add_argument("--state-file", type=Path, required=True)
+    worker_parser.add_argument("--prompt", default=CONTINUE_PROMPT)
+
+    return parser
 
 
-def main() -> None:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
     logging.basicConfig(
         level=getattr(logging, args.log_level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    sender = TmuxSender()
-    if args.tmux_target:
-        target_resolver: FixedTmuxTargetResolver | AutoTmuxTargetResolver = FixedTmuxTargetResolver(args.tmux_target)
-    else:
-        target_resolver = AutoTmuxTargetResolver(
-            capture_lines=args.capture_lines,
-            excluded_session_name=args.exclude_tmux_session or None,
-        )
-    coordinator = SleepCoordinator(sender, target_resolver)
-    server = ThreadingHTTPServer((args.host, args.port), build_handler(coordinator))
-    LOG.info(
-        "Listening on http://%s:%s/sleep using %s",
-        args.host,
-        args.port,
-        f"fixed tmux target {args.tmux_target}" if args.tmux_target else "auto tmux pane detection",
-    )
+
+    manager = TimerManager(TmuxSender(), state_dir=args.state_dir)
+
     try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        LOG.info("Shutting down")
-    finally:
-        server.server_close()
+        if args.command == "sleep":
+            payload = manager.sleep_timer(args.seconds, resolve_tmux_pane(args.tmux_pane), prompt=args.prompt)
+        elif args.command == "get":
+            payload = manager.get_timer(resolve_tmux_pane(args.tmux_pane))
+        elif args.command == "cancel":
+            payload = manager.cancel_timer(resolve_tmux_pane(args.tmux_pane))
+        elif args.command == "_worker":
+            return manager.run_worker(args.tmux_pane, args.wake_at, args.token, args.state_file, args.prompt)
+        else:
+            raise OrchestratorError(f"Unsupported command: {args.command}")
+    except OrchestratorError as exc:
+        print(json.dumps({"error": str(exc)}))
+        return 1
+
+    print(json.dumps(payload))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
