@@ -88,8 +88,8 @@ class SleepCoordinatorTests(unittest.TestCase):
 class AutoTmuxTargetResolverTests(unittest.TestCase):
     def test_resolver_picks_most_recent_sleep_caller(self) -> None:
         panes = [
-            TmuxPane("%1", "bash", False, False, 100),
-            TmuxPane("%2", "bash", True, False, 250),
+            TmuxPane("%1", "dev", "bash", False, False, 100),
+            TmuxPane("%2", "dev", "bash", True, False, 250),
         ]
         transcripts = {
             "%1": "curl -X POST http://127.0.0.1:8766/sleep -d '30'\nolder output\n",
@@ -104,8 +104,8 @@ class AutoTmuxTargetResolverTests(unittest.TestCase):
 
     def test_resolver_does_not_let_later_general_activity_steal_resume(self) -> None:
         panes = [
-            TmuxPane("%1", "bash", True, False, 5_000),
-            TmuxPane("%2", "bash", False, False, 100),
+            TmuxPane("%1", "dev", "bash", True, False, 5_000),
+            TmuxPane("%2", "dev", "bash", False, False, 100),
         ]
         transcripts = {
             "%1": (
@@ -125,12 +125,59 @@ class AutoTmuxTargetResolverTests(unittest.TestCase):
 
     def test_resolver_raises_when_no_sleep_call_is_visible(self) -> None:
         resolver = AutoTmuxTargetResolver(
-            list_panes_fn=lambda: [TmuxPane("%1", "bash", True, False, 100)],
+            list_panes_fn=lambda: [TmuxPane("%1", "dev", "bash", True, False, 100)],
             capture_pane_fn=lambda _pane_id, _capture_lines: "echo hello\nls -la\n",
         )
 
         with self.assertRaises(OrchestratorError):
             resolver.resolve_target()
+
+    def test_resolver_ignores_orchestrator_log_lines_containing_sleep(self) -> None:
+        panes = [
+            TmuxPane("%7", "codex-orchestrator", "python", True, False, 5_000),
+            TmuxPane("%8", "dev", "bash", False, False, 100),
+        ]
+        transcripts = {
+            "%7": (
+                "2026-04-07 12:00:00 INFO orchestrator: Listening on http://127.0.0.1:8766/sleep\n"
+                "2026-04-07 12:00:10 INFO orchestrator: 127.0.0.1 - \"POST /sleep HTTP/1.1\" 202 -\n"
+                "[Automated Message] Sleep complete.\n"
+            ),
+            "%8": "user@host:~$ curl -X POST http://127.0.0.1:8766/sleep -d '5'\n",
+        }
+        resolver = AutoTmuxTargetResolver(
+            list_panes_fn=lambda: panes,
+            capture_pane_fn=lambda pane_id, _capture_lines: transcripts[pane_id],
+        )
+
+        self.assertEqual(resolver.resolve_target(), "%8")
+
+    def test_resolver_ignores_excluded_orchestrator_session_even_if_command_matches(self) -> None:
+        panes = [
+            TmuxPane("%7", "codex-orchestrator", "python", True, False, 5_000),
+            TmuxPane("%8", "dev", "python", False, False, 100),
+        ]
+        transcripts = {
+            "%7": "python -m http.server http://127.0.0.1:8766/sleep\n",
+            "%8": "python -c \"import requests; requests.post('http://127.0.0.1:8766/sleep', json={'seconds': 5})\"\n",
+        }
+        resolver = AutoTmuxTargetResolver(
+            list_panes_fn=lambda: panes,
+            capture_pane_fn=lambda pane_id, _capture_lines: transcripts[pane_id],
+        )
+
+        self.assertEqual(resolver.resolve_target(), "%8")
+
+    def test_resolver_matches_python_sleep_request_lines(self) -> None:
+        panes = [TmuxPane("%9", "dev", "python", True, False, 100)]
+        resolver = AutoTmuxTargetResolver(
+            list_panes_fn=lambda: panes,
+            capture_pane_fn=lambda _pane_id, _capture_lines: (
+                "python -c \"import requests; requests.post('http://127.0.0.1:8766/sleep', json={'seconds': 5})\"\n"
+            ),
+        )
+
+        self.assertEqual(resolver.resolve_target(), "%9")
 
 
 class TmuxSenderTests(unittest.TestCase):

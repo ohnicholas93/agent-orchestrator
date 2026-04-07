@@ -16,7 +16,11 @@ from typing import Callable
 
 CONTINUE_PROMPT = "[Automated Message] Sleep complete."
 LOG = logging.getLogger("orchestrator")
-SLEEP_CALL_PATTERN = re.compile(r"(curl|httpie|http)\b.*?/sleep\b|/sleep\b.*?(curl|httpie|http)", re.IGNORECASE)
+SHELL_SLEEP_CALL_PATTERNS = (
+    re.compile(r"^\s*(?:.+[#$%>]\s+)?curl\b.*?/sleep\b", re.IGNORECASE),
+    re.compile(r"^\s*(?:.+[#$%>]\s+)?http(?:ie)?\b.*?/sleep\b", re.IGNORECASE),
+    re.compile(r"^\s*(?:.+[#$%>]\s+)?python(?:\d+(?:\.\d+)*)?\b.*?/sleep\b", re.IGNORECASE),
+)
 
 
 class OrchestratorError(RuntimeError):
@@ -26,6 +30,7 @@ class OrchestratorError(RuntimeError):
 @dataclass
 class TmuxPane:
     pane_id: str
+    session_name: str
     current_command: str
     is_active: bool
     is_dead: bool
@@ -58,6 +63,7 @@ class FixedTmuxTargetResolver:
 class AutoTmuxTargetResolver:
     capture_lines: int = 120
     min_score: int = 1
+    excluded_session_name: str | None = "codex-orchestrator"
     list_panes_fn: Callable[[], list[TmuxPane]] | None = None
     capture_pane_fn: Callable[[str, int], str] | None = None
 
@@ -83,10 +89,12 @@ class AutoTmuxTargetResolver:
     def _rank_pane(self, pane: TmuxPane) -> tuple[int, int, int, int] | None:
         if pane.is_dead:
             return None
+        if self.excluded_session_name and pane.session_name == self.excluded_session_name:
+            return None
 
         transcript = self._capture_pane(pane.pane_id)
         lines = [line.strip() for line in transcript.splitlines() if line.strip()]
-        match_offsets = [offset for offset, line in enumerate(reversed(lines)) if SLEEP_CALL_PATTERN.search(line)]
+        match_offsets = [offset for offset, line in enumerate(reversed(lines)) if self._is_sleep_request_line(line)]
         if not match_offsets:
             return None
 
@@ -96,6 +104,10 @@ class AutoTmuxTargetResolver:
         # Prefer the pane whose /sleep call is closest to the live bottom of scrollback.
         # General pane activity is only a tie-breaker when the visible /sleep recency is the same.
         return (-latest_offset, int(pane.is_active), pane.activity_epoch, preferred_command)
+
+    @staticmethod
+    def _is_sleep_request_line(line: str) -> bool:
+        return any(pattern.search(line) for pattern in SHELL_SLEEP_CALL_PATTERNS)
 
     def _list_panes(self) -> list[TmuxPane]:
         if self.list_panes_fn is not None:
@@ -107,7 +119,7 @@ class AutoTmuxTargetResolver:
                 "list-panes",
                 "-a",
                 "-F",
-                "#{pane_id}\t#{pane_current_command}\t#{pane_active}\t#{pane_dead}\t#{pane_activity}",
+                "#{pane_id}\t#{session_name}\t#{pane_current_command}\t#{pane_active}\t#{pane_dead}\t#{pane_activity}",
             ],
             check=True,
             text=True,
@@ -115,10 +127,11 @@ class AutoTmuxTargetResolver:
         )
         panes: list[TmuxPane] = []
         for raw_line in result.stdout.splitlines():
-            pane_id, command, is_active, is_dead, activity_epoch = raw_line.split("\t", 4)
+            pane_id, session_name, command, is_active, is_dead, activity_epoch = raw_line.split("\t", 5)
             panes.append(
                 TmuxPane(
                     pane_id=pane_id,
+                    session_name=session_name,
                     current_command=command,
                     is_active=is_active == "1",
                     is_dead=is_dead == "1",
@@ -253,6 +266,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--tmux-target", help="Explicit tmux pane/session/window target. If omitted, auto-detect the caller pane.")
     parser.add_argument("--capture-lines", type=int, default=120, help="Number of lines to inspect from each tmux pane during auto-detection.")
+    parser.add_argument(
+        "--exclude-tmux-session",
+        default="codex-orchestrator",
+        help="Tmux session name to exclude from auto-detection. Set to empty string to disable exclusion.",
+    )
     parser.add_argument("--log-level", default="INFO")
     return parser.parse_args()
 
@@ -267,7 +285,10 @@ def main() -> None:
     if args.tmux_target:
         target_resolver: FixedTmuxTargetResolver | AutoTmuxTargetResolver = FixedTmuxTargetResolver(args.tmux_target)
     else:
-        target_resolver = AutoTmuxTargetResolver(capture_lines=args.capture_lines)
+        target_resolver = AutoTmuxTargetResolver(
+            capture_lines=args.capture_lines,
+            excluded_session_name=args.exclude_tmux_session or None,
+        )
     coordinator = SleepCoordinator(sender, target_resolver)
     server = ThreadingHTTPServer((args.host, args.port), build_handler(coordinator))
     LOG.info(
