@@ -5,7 +5,7 @@ description: Use when a Codex agent needs to pause for a fixed duration and resu
 
 # Orchestrator Sleep
 
-This skill uses the local `codex-orchestrator` plugin to pause an agent and resume it later.
+This skill bundles its own local Python script to pause an agent and resume it later.
 
 ## When to use
 
@@ -14,26 +14,26 @@ This skill uses the local `codex-orchestrator` plugin to pause an agent and resu
 
 ## Workflow
 
-1. Run the sleep entrypoint from the same tmux pane as the agent:
+1. Run the bundled sleep entrypoint from the same tmux pane as the agent:
 
 ```bash
-python /path/to/codex-orchestrator/orchestrator.py sleep 300
+python ~/.agents/skills/orchestrator-sleep/scripts/orchestrator.py sleep 300
 ```
 
-This command uses `TMUX_PANE`, records the timer for that pane, and spawns a detached worker process. 
+This command uses `TMUX_PANE`, records the timer for that pane, and spawns a detached worker process.
 
 2. After sending the sleep command, stop responding immediately. Do not keep working, add commentary, or send extra messages.
 
 3. If needed, inspect the active timer for the current pane:
 
 ```bash
-python /path/to/codex-orchestrator/orchestrator.py get
+python ~/.agents/skills/orchestrator-sleep/scripts/orchestrator.py get
 ```
 
 4. If needed, cancel the active timer for the current pane:
 
 ```bash
-python /path/to/codex-orchestrator/orchestrator.py cancel
+python ~/.agents/skills/orchestrator-sleep/scripts/orchestrator.py cancel
 ```
 
 5. Wait for the worker to reprompt the same tmux pane with:
@@ -48,4 +48,4 @@ python /path/to/codex-orchestrator/orchestrator.py cancel
 
 - Only one active timer is allowed per tmux pane.
 - The commands expect to run inside tmux so `TMUX_PANE` is available.
-- For testing, `orchestrator.py` also accepts `--tmux-pane` to override the pane explicitly.
+- For testing, `~/.agents/skills/orchestrator-sleep/scripts/orchestrator.py` also accepts `--tmux-pane` to override the pane explicitly.

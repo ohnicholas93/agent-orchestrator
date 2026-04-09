@@ -1,21 +1,29 @@
 from __future__ import annotations
 
+import importlib.util
+import sys
 import tempfile
 import threading
 import unittest
 from unittest import mock
 from pathlib import Path
 
-from orchestrator import (
-    CONTINUE_PROMPT,
-    STALE_TIMER_GRACE_SECONDS,
-    OrchestratorError,
-    TimerManager,
-    TimerState,
-    TmuxSender,
-    main,
-    resolve_tmux_pane,
-)
+
+MODULE_PATH = Path(__file__).resolve().parents[1] / "skills" / "orchestrator-sleep" / "scripts" / "orchestrator.py"
+MODULE_SPEC = importlib.util.spec_from_file_location("orchestrator_under_test", MODULE_PATH)
+assert MODULE_SPEC is not None and MODULE_SPEC.loader is not None
+orchestrator = importlib.util.module_from_spec(MODULE_SPEC)
+sys.modules[MODULE_SPEC.name] = orchestrator
+MODULE_SPEC.loader.exec_module(orchestrator)
+
+CONTINUE_PROMPT = orchestrator.CONTINUE_PROMPT
+STALE_TIMER_GRACE_SECONDS = orchestrator.STALE_TIMER_GRACE_SECONDS
+OrchestratorError = orchestrator.OrchestratorError
+TimerManager = orchestrator.TimerManager
+TimerState = orchestrator.TimerState
+TmuxSender = orchestrator.TmuxSender
+main = orchestrator.main
+resolve_tmux_pane = orchestrator.resolve_tmux_pane
 
 
 class FakeSender:
@@ -374,7 +382,7 @@ class TimerManagerTests(unittest.TestCase):
         def request_sleep() -> None:
             try:
                 results.append(manager.sleep_timer(5, "%race"))
-            except Exception as exc:  # pragma: no cover - assertion below inspects the exact type
+            except Exception as exc:
                 errors.append(exc)
 
         first = threading.Thread(target=request_sleep)
@@ -401,13 +409,13 @@ class TimerManagerTests(unittest.TestCase):
         cancel_result: dict[str, object] = {}
 
         class BlockingSender:
+            def __init__(self) -> None:
+                self.prompts: list[tuple[str, str]] = []
+
             def send_prompt(self, target: str, prompt: str) -> None:
                 send_started.set()
                 release_send.wait(timeout=1)
                 self.prompts.append((target, prompt))
-
-            def __init__(self) -> None:
-                self.prompts: list[tuple[str, str]] = []
 
         sender = BlockingSender()
         manager = TimerManager(
@@ -449,7 +457,7 @@ class TimerManagerTests(unittest.TestCase):
 
 
 class WorkerSpawnTests(unittest.TestCase):
-    @mock.patch("orchestrator.subprocess.Popen")
+    @mock.patch.object(orchestrator.subprocess, "Popen")
     def test_spawn_worker_uses_direct_subprocess_without_shell_expansion(self, mock_popen) -> None:
         args = [
             "python",
@@ -478,8 +486,8 @@ class TmuxResolutionTests(unittest.TestCase):
 
 
 class CliTests(unittest.TestCase):
-    @mock.patch("orchestrator.print")
-    @mock.patch("orchestrator.TimerManager")
+    @mock.patch.object(orchestrator, "print")
+    @mock.patch.object(orchestrator, "TimerManager")
     def test_main_sleep_subcommand_uses_timer_manager(self, mock_manager_cls, mock_print) -> None:
         mock_manager = mock_manager_cls.return_value
         mock_manager.sleep_timer.return_value = {"accepted": True, "target": "%9"}
@@ -490,8 +498,8 @@ class CliTests(unittest.TestCase):
         mock_manager.sleep_timer.assert_called_once_with(30.0, "%9", prompt=CONTINUE_PROMPT)
         mock_print.assert_called_once_with('{"accepted": true, "target": "%9"}')
 
-    @mock.patch("orchestrator.print")
-    @mock.patch("orchestrator.TimerManager")
+    @mock.patch.object(orchestrator, "print")
+    @mock.patch.object(orchestrator, "TimerManager")
     def test_main_sleep_subcommand_reports_capability_error(self, mock_manager_cls, mock_print) -> None:
         mock_manager = mock_manager_cls.return_value
         mock_manager.sleep_timer.side_effect = OrchestratorError(
@@ -507,8 +515,8 @@ class CliTests(unittest.TestCase):
             'Ask the user to approve escalation, then retry the sleep command."}'
         )
 
-    @mock.patch("orchestrator.print")
-    @mock.patch("orchestrator.TimerManager")
+    @mock.patch.object(orchestrator, "print")
+    @mock.patch.object(orchestrator, "TimerManager")
     def test_main_get_subcommand_uses_current_tmux_pane_when_available(self, mock_manager_cls, mock_print) -> None:
         mock_manager = mock_manager_cls.return_value
         mock_manager.get_timer.return_value = {"active": True, "target": "%9"}
@@ -521,8 +529,8 @@ class CliTests(unittest.TestCase):
         mock_manager.list_active_timers.assert_not_called()
         mock_print.assert_called_once_with('{"active": true, "target": "%9"}')
 
-    @mock.patch("orchestrator.print")
-    @mock.patch("orchestrator.TimerManager")
+    @mock.patch.object(orchestrator, "print")
+    @mock.patch.object(orchestrator, "TimerManager")
     def test_main_get_subcommand_lists_all_timers_outside_tmux(self, mock_manager_cls, mock_print) -> None:
         mock_manager = mock_manager_cls.return_value
         mock_manager.list_active_timers.return_value = {"active_timers": [], "count": 0}
@@ -537,7 +545,7 @@ class CliTests(unittest.TestCase):
 
 
 class TmuxSenderTests(unittest.TestCase):
-    @mock.patch("orchestrator.subprocess.run")
+    @mock.patch.object(orchestrator.subprocess, "run")
     def test_send_prompt_sends_text_then_enter(self, mock_run) -> None:
         sender = TmuxSender(sleep_fn=lambda _seconds: None)
         sender.send_prompt("%9", "continue please")

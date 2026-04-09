@@ -1,6 +1,8 @@
-# Codex Orchestrator
+# Codex Orchestrator Skill Pack
 
-This is a tmux-aware CLI for pausing a Codex agent and resuming it later in the same pane.
+This repo is an installable skill bundle.
+
+It currently ships one skill, [`orchestrator-sleep`](skills/orchestrator-sleep), which bundles a tmux-aware CLI for pausing a Codex agent and resuming it later in the same pane.
 
 Each `sleep` command records timer state for the current `TMUX_PANE`, then spawns a detached worker process that waits in the background and later sends:
 
@@ -10,53 +12,46 @@ Each `sleep` command records timer state for the current `TMUX_PANE`, then spawn
 
 ## Install
 
-Codex plugins are discovered through a marketplace registry file. For a home-local install, the documented marketplace path is `~/.agents/plugins/marketplace.json`.
+This repo keeps bundled skills under [`skills/`](/home/nicholasoh/Workspace/Nitrous/Internal/Projects/codex-orchestrator/skills). The installer creates one symlink per skill under `~/.agents/skills/`.
 
-Recommended layout:
-
-1. Copy this repo to `~/codex-plugins/codex-orchestrator`
-2. Create `~/.agents/plugins/marketplace.json`
-3. Register the plugin as a local source
-4. Start a new Codex session so plugin discovery reloads
-
-Example marketplace file:
-
-```json
-{
-  "name": "local-plugins",
-  "interface": {
-    "displayName": "Local Plugins"
-  },
-  "plugins": [
-    {
-      "name": "codex-orchestrator",
-      "source": {
-        "source": "local",
-        "path": "./codex-plugins/codex-orchestrator"
-      },
-      "policy": {
-        "installation": "AVAILABLE",
-        "authentication": "ON_INSTALL"
-      },
-      "category": "Utilities"
-    }
-  ]
-}
+```bash
+bash install.sh
 ```
 
-Notes:
+To uninstall all symlinks created for this bundle:
 
-- The plugin manifest lives at [`.codex-plugin/plugin.json`](/home/nicholasoh/Workspace/Nitrous/Internal/Projects/codex-orchestrator/.codex-plugin/plugin.json)
-- The bundled skill lives at [`skills/codex-orchestrator/SKILL.md`](/home/nicholasoh/Workspace/Nitrous/Internal/Projects/codex-orchestrator/skills/codex-orchestrator/SKILL.md)
+```bash
+bash install.sh uninstall
+```
+
+That currently creates:
+
+```text
+~/.agents/skills/orchestrator-sleep -> <repo>/skills/orchestrator-sleep
+```
+
+If you add more skills later, rerunning `bash install.sh` will link those too. `bash install.sh uninstall` removes only matching symlinks that point back to this repo's bundled skills.
+
+Codex detects skill changes automatically, but if an update does not appear in the current session, restart Codex.
+
+## Skill Layout
+
+```text
+skills/
+  orchestrator-sleep/
+    SKILL.md
+    scripts/
+      orchestrator.py
+```
 
 ## Commands
 
 The CLI keys timers by tmux pane. Only one active timer is allowed per pane.
 
 ```bash
-python orchestrator.py sleep 600
-python orchestrator.py get
-python orchestrator.py cancel
+python skills/orchestrator-sleep/scripts/orchestrator.py sleep 600
+python skills/orchestrator-sleep/scripts/orchestrator.py get
+python skills/orchestrator-sleep/scripts/orchestrator.py cancel
 ```
 
 `sleep` and `cancel` expect to run inside tmux so `TMUX_PANE` is available. `get` behaves differently:
@@ -68,9 +63,9 @@ python orchestrator.py cancel
 For testing, you can override the pane manually:
 
 ```bash
-python orchestrator.py sleep 600 --tmux-pane %3
-python orchestrator.py get --tmux-pane %3
-python orchestrator.py cancel --tmux-pane %3
+python skills/orchestrator-sleep/scripts/orchestrator.py sleep 600 --tmux-pane %3
+python skills/orchestrator-sleep/scripts/orchestrator.py get --tmux-pane %3
+python skills/orchestrator-sleep/scripts/orchestrator.py cancel --tmux-pane %3
 ```
 
 ## Behavior
@@ -90,25 +85,25 @@ State files live under `$XDG_RUNTIME_DIR/codex-orchestrator` when available, oth
 Start a sleep timer:
 
 ```bash
-python orchestrator.py sleep 300
+python skills/orchestrator-sleep/scripts/orchestrator.py sleep 300
 ```
 
 Check it:
 
 ```bash
-python orchestrator.py get
+python skills/orchestrator-sleep/scripts/orchestrator.py get
 ```
 
 List all active timers outside tmux:
 
 ```bash
-env -u TMUX_PANE python orchestrator.py get
+env -u TMUX_PANE python skills/orchestrator-sleep/scripts/orchestrator.py get
 ```
 
 Cancel it:
 
 ```bash
-python orchestrator.py cancel
+python skills/orchestrator-sleep/scripts/orchestrator.py cancel
 ```
 
 ## Tests
