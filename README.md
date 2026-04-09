@@ -2,7 +2,10 @@
 
 This repo is an installable skill bundle.
 
-It currently ships one skill, [`orchestrator-sleep`](skills/orchestrator-sleep), which bundles a tmux-aware CLI for pausing a Codex agent and resuming it later in the same pane.
+It currently ships two skills:
+
+- [`orchestrator-sleep`](skills/orchestrator-sleep): a tmux-aware sleep/resume workflow backed by a local Python CLI.
+- [`privileged-researcher`](skills/privileged-researcher): a scratchpad-driven orchestration skill for privileged research and execution workflows.
 
 Each `sleep` command records timer state for the current `TMUX_PANE`, then spawns a detached worker process that waits in the background and later sends:
 
@@ -28,6 +31,7 @@ That currently creates:
 
 ```text
 ~/.agents/skills/orchestrator-sleep -> <repo>/skills/orchestrator-sleep
+~/.agents/skills/privileged-researcher -> <repo>/skills/privileged-researcher
 ```
 
 If you add more skills later, rerunning `bash install.sh` will link those too. `bash install.sh uninstall` removes only matching symlinks that point back to this repo's bundled skills.
@@ -42,6 +46,26 @@ skills/
     SKILL.md
     scripts/
       orchestrator.py
+  privileged-researcher/
+    SKILL.md
+    scratchpads/
+      template.md
+```
+
+## Bundled Skills
+
+### `orchestrator-sleep`
+
+Use this when an agent needs to pause for a fixed duration and resume later in the same tmux pane.
+
+### `privileged-researcher`
+
+Use this when you want a scratchpad-first workflow for privileged or longer-running research/execution tasks. The skill requires copying the bundled scratchpad template to a task-specific path first, then using that scratchpad as the source of truth for the rest of the work.
+
+Bundled template:
+
+```text
+skills/privileged-researcher/scratchpads/template.md
 ```
 
 ## Commands
