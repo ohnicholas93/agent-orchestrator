@@ -7,7 +7,7 @@ TARGET_ROOT="${HOME}/.agents/skills"
 MODE="${1:-install}"
 
 usage() {
-  printf 'usage: bash install.sh [install|uninstall]\n' >&2
+  printf 'usage: ./installer.sh [install|uninstall]\n' >&2
   exit 1
 }
 
@@ -20,6 +20,31 @@ case "$MODE" in
 esac
 
 mkdir -p "$TARGET_ROOT"
+
+cleanup_renamed_skill_link() {
+  old_name="$1"
+  new_name="$2"
+  old_path="$TARGET_ROOT/$old_name"
+  new_target="$SOURCE_ROOT/$new_name"
+
+  if [[ ! -L "$old_path" ]]; then
+    return
+  fi
+
+  current_target="$(readlink "$old_path")"
+  case "$current_target" in
+    "$SOURCE_ROOT/$old_name"|"$new_target")
+      rm "$old_path"
+      printf 'removed legacy link %s\n' "$old_path"
+      ;;
+    *)
+      ;;
+  esac
+}
+
+# Handle known skill renames so upgrades do not leave stale links behind.
+cleanup_renamed_skill_link "privileged-researcher" "privileged-automation"
+cleanup_renamed_skill_link "unprivileged-researcher" "unprivileged-automation"
 
 found=0
 for skill_dir in "$SOURCE_ROOT"/*; do

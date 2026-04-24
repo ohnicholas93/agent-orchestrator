@@ -5,8 +5,8 @@ This repo is an installable skill bundle.
 It currently ships three skills:
 
 - [`orchestrator-sleep`](skills/orchestrator-sleep): a tmux-aware sleep/resume workflow backed by a local Python CLI.
-- [`privileged-researcher`](skills/privileged-researcher): a scratchpad-driven privileged workflow skill.
-- [`unprivileged-researcher`](skills/unprivileged-researcher): a scratchpad-driven unprivileged workflow skill.
+- [`privileged-automation`](skills/privileged-automation): a scratchpad-driven privileged automation skill.
+- [`unprivileged-automation`](skills/unprivileged-automation): a scratchpad-driven unprivileged automation skill.
 
 Each `sleep` command records timer state for the current `TMUX_PANE`, then spawns a detached worker process that waits in the background and later sends:
 
@@ -19,24 +19,24 @@ Each `sleep` command records timer state for the current `TMUX_PANE`, then spawn
 This repo keeps bundled skills under [`skills/`](/home/nicholasoh/Workspace/Nitrous/Internal/Projects/codex-orchestrator/skills). The installer creates one symlink per skill under `~/.agents/skills/`.
 
 ```bash
-bash install.sh
+./installer.sh
 ```
 
 To uninstall all symlinks created for this bundle:
 
 ```bash
-bash install.sh uninstall
+./installer.sh uninstall
 ```
 
 That currently creates:
 
 ```text
 ~/.agents/skills/orchestrator-sleep -> <repo>/skills/orchestrator-sleep
-~/.agents/skills/privileged-researcher -> <repo>/skills/privileged-researcher
-~/.agents/skills/unprivileged-researcher -> <repo>/skills/unprivileged-researcher
+~/.agents/skills/privileged-automation -> <repo>/skills/privileged-automation
+~/.agents/skills/unprivileged-automation -> <repo>/skills/unprivileged-automation
 ```
 
-If you add more skills later, rerunning `bash install.sh` will link those too. `bash install.sh uninstall` removes only matching symlinks that point back to this repo's bundled skills.
+If you add more skills later, rerunning `./installer.sh` will link those too. `./installer.sh uninstall` removes only matching symlinks that point back to this repo's bundled skills. The installer also cleans up legacy renamed links from older skill names.
 
 Codex detects skill changes automatically, but if an update does not appear in the current session, restart Codex.
 
@@ -48,11 +48,11 @@ skills/
     SKILL.md
     scripts/
       orchestrator.py
-  privileged-researcher/
+  privileged-automation/
     SKILL.md
     scratchpads/
       template.md
-  unprivileged-researcher/
+  unprivileged-automation/
     SKILL.md
     scratchpads/
       template.md
@@ -64,24 +64,24 @@ skills/
 
 Use this when an agent needs to pause for a fixed duration and resume later in the same tmux pane.
 
-### `privileged-researcher` (Privileged Automation)
+### `privileged-automation` (Privileged Automation)
 
 Use this when you want a scratchpad-first workflow for privileged or longer-running research/execution tasks. The skill requires copying the bundled scratchpad template to a task-specific path first, then using that scratchpad as the source of truth for the rest of the work.
 
 Bundled template:
 
 ```text
-skills/privileged-researcher/scratchpads/template.md
+skills/privileged-automation/scratchpads/template.md
 ```
 
-### `unprivileged-researcher` (Unprivileged Automation)
+### `unprivileged-automation` (Unprivileged Automation)
 
 Use this when you want a scratchpad-first workflow for longer-running execution tasks without privileged access.
 
 Bundled template:
 
 ```text
-skills/unprivileged-researcher/scratchpads/template.md
+skills/unprivileged-automation/scratchpads/template.md
 ```
 
 ## Commands

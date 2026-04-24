@@ -15,7 +15,7 @@ Use this skill for orchestrating tasks where the agent should work from a durabl
 
 ## Workflow
 
-1. Copy `~/.agents/skills/privileged-researcher/scratchpads/template.md` to the scratchpad path provided by the user.
+1. Copy `~/.agents/skills/privileged-automation/scratchpads/template.md` to the scratchpad path provided by the user.
 2. If the user did not provide a scratchpad path, ask for one before proceeding.
 3. Immediately edit the copied scratchpad so it reflects the current task, scope, paths, sessions, commands, status, and notes.
 4. Read the scratchpad's `Operating Rules` section and adopt it as the canonical local operations manual for the task.
@@ -36,5 +36,5 @@ Use this skill for orchestrating tasks where the agent should work from a durabl
 Scratchpad template:
 
 ```text
-~/.agents/skills/privileged-researcher/scratchpads/template.md
+~/.agents/skills/privileged-automation/scratchpads/template.md
 ```
