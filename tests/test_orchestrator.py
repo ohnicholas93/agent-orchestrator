@@ -630,6 +630,29 @@ class TmuxSenderTests(unittest.TestCase):
             ],
         )
 
+    def test_send_compact_sequence_interrupts_then_submits_compact(self) -> None:
+        sleep_calls: list[float] = []
+        sender = TmuxSender(sleep_fn=lambda seconds: sleep_calls.append(seconds))
+
+        with mock.patch.object(sender, "_tmux") as mock_tmux:
+            sender.send_compact_sequence(
+                "%9",
+                confirmation_prompt="[Automated Message] Context compacted.",
+                post_command_delay_seconds=0.5,
+            )
+
+        self.assertEqual(
+            [call.args[0] for call in mock_tmux.call_args_list],
+            [
+                ["send-keys", "-t", "%9", "Escape"],
+                ["send-keys", "-t", "%9", "/compact"],
+                ["send-keys", "-t", "%9", "Enter"],
+                ["send-keys", "-t", "%9", "[Automated Message] Context compacted."],
+                ["send-keys", "-t", "%9", "Enter"],
+            ],
+        )
+        self.assertEqual(sleep_calls, [0.5, 0.5, 0.5, 0.5])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -5,7 +5,11 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
-from orchestrator_constants import COMPACT_COMMAND, TMUX_SEND_SPACING_SECONDS
+from orchestrator_constants import (
+    COMPACT_COMMAND,
+    COMPACT_INTERRUPT_KEY,
+    TMUX_SEND_SPACING_SECONDS,
+)
 
 
 @dataclass
@@ -14,9 +18,9 @@ class TmuxSender:
     sleep_fn: Callable[[float], None] = time.sleep
 
     def send_prompt(self, target: str, prompt: str) -> None:
-        self._tmux(["send-keys", "-t", target, prompt], capture_output=False)
+        self._send_keys(target, prompt)
         self.sleep_fn(self.send_spacing_seconds)
-        self._tmux(["send-keys", "-t", target, "Enter"], capture_output=False)
+        self._send_enter(target)
 
     def send_compact_sequence(
         self,
@@ -25,6 +29,8 @@ class TmuxSender:
         confirmation_prompt: str,
         post_command_delay_seconds: float,
     ) -> None:
+        self._send_keys(target, COMPACT_INTERRUPT_KEY)
+        self.sleep_fn(self.send_spacing_seconds)
         self.send_prompt(target, COMPACT_COMMAND)
         self.sleep_fn(post_command_delay_seconds)
         self.send_prompt(target, confirmation_prompt)
@@ -39,3 +45,9 @@ class TmuxSender:
     @staticmethod
     def _tmux(args: list[str], *, capture_output: bool) -> subprocess.CompletedProcess[str]:
         return subprocess.run(["tmux", *args], check=True, text=True, capture_output=capture_output)
+
+    def _send_keys(self, target: str, text: str) -> None:
+        self._tmux(["send-keys", "-t", target, text], capture_output=False)
+
+    def _send_enter(self, target: str) -> None:
+        self._tmux(["send-keys", "-t", target, "Enter"], capture_output=False)

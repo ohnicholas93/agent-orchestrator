@@ -100,7 +100,7 @@ python skills/orchestrator-sleep/scripts/orchestrator.py compact
 - In the current Codex sandbox harness, `sleep` fails early with an error telling the agent to request user escalation, because detached background workers are not reliable there.
 - Inside tmux, `status` reports the pending timer for the current pane, including overdue timers that have not been processed by the worker yet.
 - Outside tmux, `status` lists all pending timers in the state directory for admin use, including overdue timers that have not been processed by the worker yet, and deletes timers only after they have been overdue for more than 10 seconds.
-- `compact` sends `/compact` followed by an automated confirmation message in the same pane.
+- `compact` first sends `Esc` to interrupt current work, then submits `/compact`, then sends an automated confirmation message.
 
 For testing, you can override the pane manually:
 
