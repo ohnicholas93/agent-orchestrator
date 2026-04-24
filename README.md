@@ -4,7 +4,7 @@ This repo is an installable skill bundle.
 
 It currently ships three skills:
 
-- [`orchestrator-sleep`](skills/orchestrator-sleep): a tmux-aware sleep/resume workflow backed by a local Python CLI.
+- [`codex-orchestrator`](skills/codex-orchestrator): a tmux-aware sleep/resume workflow backed by a local Python CLI.
 - [`privileged-automation`](skills/privileged-automation): a scratchpad-driven privileged automation skill.
 - [`unprivileged-automation`](skills/unprivileged-automation): a scratchpad-driven unprivileged automation skill.
 
@@ -31,7 +31,7 @@ To uninstall all symlinks created for this bundle:
 That currently creates:
 
 ```text
-~/.agents/skills/orchestrator-sleep -> <repo>/skills/orchestrator-sleep
+~/.agents/skills/codex-orchestrator -> <repo>/skills/codex-orchestrator
 ~/.agents/skills/privileged-automation -> <repo>/skills/privileged-automation
 ~/.agents/skills/unprivileged-automation -> <repo>/skills/unprivileged-automation
 ```
@@ -44,7 +44,7 @@ Codex detects skill changes automatically, but if an update does not appear in t
 
 ```text
 skills/
-  orchestrator-sleep/
+  codex-orchestrator/
     SKILL.md
     scripts/
       orchestrator.py
@@ -60,7 +60,7 @@ skills/
 
 ## Bundled Skills
 
-### `orchestrator-sleep`
+### `codex-orchestrator` (Codex Orchestrator)
 
 Use this when an agent needs to pause for a fixed duration and resume later in the same tmux pane.
 
@@ -89,10 +89,10 @@ skills/unprivileged-automation/scratchpads/template.md
 The CLI keys timers by tmux pane. Only one active timer is allowed per pane.
 
 ```bash
-python skills/orchestrator-sleep/scripts/orchestrator.py sleep 600
-python skills/orchestrator-sleep/scripts/orchestrator.py status
-python skills/orchestrator-sleep/scripts/orchestrator.py cancel
-python skills/orchestrator-sleep/scripts/orchestrator.py compact
+python skills/codex-orchestrator/scripts/orchestrator.py sleep 600
+python skills/codex-orchestrator/scripts/orchestrator.py status
+python skills/codex-orchestrator/scripts/orchestrator.py cancel
+python skills/codex-orchestrator/scripts/orchestrator.py compact
 ```
 
 `sleep`, `cancel`, and `compact` expect to run inside tmux so `TMUX_PANE` is available. `status` behaves differently:
@@ -105,10 +105,10 @@ python skills/orchestrator-sleep/scripts/orchestrator.py compact
 For testing, you can override the pane manually:
 
 ```bash
-python skills/orchestrator-sleep/scripts/orchestrator.py sleep 600 --tmux-pane %3
-python skills/orchestrator-sleep/scripts/orchestrator.py status --tmux-pane %3
-python skills/orchestrator-sleep/scripts/orchestrator.py cancel --tmux-pane %3
-python skills/orchestrator-sleep/scripts/orchestrator.py compact --tmux-pane %3
+python skills/codex-orchestrator/scripts/orchestrator.py sleep 600 --tmux-pane %3
+python skills/codex-orchestrator/scripts/orchestrator.py status --tmux-pane %3
+python skills/codex-orchestrator/scripts/orchestrator.py cancel --tmux-pane %3
+python skills/codex-orchestrator/scripts/orchestrator.py compact --tmux-pane %3
 ```
 
 ## Behavior
@@ -129,25 +129,25 @@ State files live under `$XDG_RUNTIME_DIR/codex-orchestrator` when available, oth
 Start a sleep timer:
 
 ```bash
-python skills/orchestrator-sleep/scripts/orchestrator.py sleep 300
+python skills/codex-orchestrator/scripts/orchestrator.py sleep 300
 ```
 
 Check it:
 
 ```bash
-python skills/orchestrator-sleep/scripts/orchestrator.py status
+python skills/codex-orchestrator/scripts/orchestrator.py status
 ```
 
 List all active timers outside tmux:
 
 ```bash
-env -u TMUX_PANE python skills/orchestrator-sleep/scripts/orchestrator.py status
+env -u TMUX_PANE python skills/codex-orchestrator/scripts/orchestrator.py status
 ```
 
 Cancel it:
 
 ```bash
-python skills/orchestrator-sleep/scripts/orchestrator.py cancel
+python skills/codex-orchestrator/scripts/orchestrator.py cancel
 ```
 
 ## Tests

@@ -10,7 +10,7 @@ from unittest import mock
 from pathlib import Path
 
 
-MODULE_PATH = Path(__file__).resolve().parents[1] / "skills" / "orchestrator-sleep" / "scripts" / "orchestrator.py"
+MODULE_PATH = Path(__file__).resolve().parents[1] / "skills" / "codex-orchestrator" / "scripts" / "orchestrator.py"
 sys.path.insert(0, str(MODULE_PATH.parent))
 MODULE_SPEC = importlib.util.spec_from_file_location("orchestrator_under_test", MODULE_PATH)
 assert MODULE_SPEC is not None and MODULE_SPEC.loader is not None

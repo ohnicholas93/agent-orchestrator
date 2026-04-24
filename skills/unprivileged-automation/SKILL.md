@@ -31,7 +31,7 @@ Use this skill for orchestrating tasks where the agent should work from a durabl
 - Ask before dangerous, irreversible, high-impact, or privilege-requiring actions.
 - Prefer durable logs and checkpoint-aware relaunches. You MUST use tmux for long-running work, and should request escalation to launch tmux if the environment prevents it.
 - Keep context lean by updating the scratchpad instead of restating operational state in chat.
-- For long waits, use the local `Orchestrator Sleep` skill instead of harness sleep timers.
+- For long waits, use the local `Codex Orchestrator` skill instead of harness sleep timers.
 
 ## Bundled Resource
 

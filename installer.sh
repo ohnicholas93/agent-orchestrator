@@ -45,6 +45,7 @@ cleanup_renamed_skill_link() {
 # Handle known skill renames so upgrades do not leave stale links behind.
 cleanup_renamed_skill_link "privileged-researcher" "privileged-automation"
 cleanup_renamed_skill_link "unprivileged-researcher" "unprivileged-automation"
+cleanup_renamed_skill_link "orchestrator-sleep" "codex-orchestrator"
 
 found=0
 for skill_dir in "$SOURCE_ROOT"/*; do
