@@ -1,9 +1,9 @@
 ---
-name: Privileged Researcher
-description: Use when a Codex agent needs a scratchpad-driven workflow for privileged research or execution tasks in a live workspace, especially when the user wants explicit scope tracking, durable notes, planned check-ins, and a final approval gate before autonomous execution.
+name: Privileged Automation
+description: Use when a Codex agent needs a scratchpad-driven workflow for privileged execution tasks in a live workspace, especially when the user wants explicit scope tracking, durable notes, planned check-ins, and a final approval gate before autonomous execution.
 ---
 
-# Privileged Researcher
+# Privileged Automation
 
 Use this skill for orchestrating tasks where the agent should work from a durable scratchpad and proceed autonomously, cautiously, with elevated or high-impact operations.
 

@@ -1,6 +1,6 @@
 ---
 name: Orchestrator Sleep
-description: Use when a Codex agent needs to pause for a fixed duration and resume later in the same tmux pane. Covers the process-based Codex Orchestrator CLI and its sleep, get, and cancel commands.
+description: Use when a Codex agent needs to pause for a fixed duration and resume later in the same tmux pane. Covers the process-based Codex Orchestrator CLI and its sleep, status, cancel, and compact commands.
 ---
 
 # Orchestrator Sleep
@@ -24,10 +24,10 @@ This command uses `TMUX_PANE`, records the timer for that pane, and spawns a det
 
 2. After sending the sleep command, stop responding immediately. Do not keep working, add commentary, or send extra messages.
 
-3. If needed, inspect the active timer for the current pane:
+3. If needed, inspect timer status for the current pane:
 
 ```bash
-python ~/.agents/skills/orchestrator-sleep/scripts/orchestrator.py get
+python ~/.agents/skills/orchestrator-sleep/scripts/orchestrator.py status
 ```
 
 4. If needed, cancel the active timer for the current pane:
@@ -36,13 +36,19 @@ python ~/.agents/skills/orchestrator-sleep/scripts/orchestrator.py get
 python ~/.agents/skills/orchestrator-sleep/scripts/orchestrator.py cancel
 ```
 
-5. Wait for the worker to reprompt the same tmux pane with:
+5. If needed, compact model context for the current pane:
+
+```bash
+python ~/.agents/skills/orchestrator-sleep/scripts/orchestrator.py compact
+```
+
+6. Wait for the worker to reprompt the same tmux pane with:
 
 ```text
 [Automated Message] Sleep complete.
 ```
 
-6. When that automated message appears, continue the task as required.
+7. When that automated message appears, continue the task as required.
 
 ## Notes
 

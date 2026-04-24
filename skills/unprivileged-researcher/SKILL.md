@@ -1,9 +1,9 @@
 ---
-name: Unprivileged Researcher
-description: Use when a Codex agent needs a scratchpad-driven workflow for research or execution tasks in a live workspace without privileged access, especially when the user wants explicit scope tracking, durable notes, planned check-ins, and a final approval gate before autonomous execution.
+name: Unprivileged Automation
+description: Use when a Codex agent needs a scratchpad-driven workflow for execution tasks in a live workspace without privileged access, especially when the user wants explicit scope tracking, durable notes, planned check-ins, and a final approval gate before autonomous execution.
 ---
 
-# Unprivileged Researcher
+# Unprivileged Automation
 
 Use this skill for orchestrating tasks where the agent should work from a durable scratchpad and proceed autonomously, cautiously, under normal sandboxed or limited-access conditions.
 

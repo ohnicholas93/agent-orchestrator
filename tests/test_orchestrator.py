@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import tempfile
 import threading
@@ -10,6 +11,7 @@ from pathlib import Path
 
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "skills" / "orchestrator-sleep" / "scripts" / "orchestrator.py"
+sys.path.insert(0, str(MODULE_PATH.parent))
 MODULE_SPEC = importlib.util.spec_from_file_location("orchestrator_under_test", MODULE_PATH)
 assert MODULE_SPEC is not None and MODULE_SPEC.loader is not None
 orchestrator = importlib.util.module_from_spec(MODULE_SPEC)
@@ -18,6 +20,7 @@ MODULE_SPEC.loader.exec_module(orchestrator)
 
 CONTINUE_PROMPT = orchestrator.CONTINUE_PROMPT
 STALE_TIMER_GRACE_SECONDS = orchestrator.STALE_TIMER_GRACE_SECONDS
+COMPACT_CONFIRMATION_PROMPT = orchestrator.COMPACT_CONFIRMATION_PROMPT
 OrchestratorError = orchestrator.OrchestratorError
 TimerManager = orchestrator.TimerManager
 TimerState = orchestrator.TimerState
@@ -67,6 +70,27 @@ class TimerManagerTests(unittest.TestCase):
         self.assertEqual(response["wake_at"], 1_012.0)
         self.assertEqual(self.spawned[0][:4], ["python", "/tmp/orchestrator.py", "_worker", "--tmux-pane"])
         self.assertTrue(state_path.exists())
+
+    def test_sleep_timer_default_worker_script_points_to_cli_entrypoint(self) -> None:
+        spawned: list[list[str]] = []
+
+        def spawn_fn(args: list[str]) -> None:
+            spawned.append(args)
+
+        manager = TimerManager(
+            self.sender,
+            state_dir=self.state_dir,
+            time_fn=lambda: self.now,
+            sleep_fn=lambda _seconds: None,
+            spawn_fn=spawn_fn,
+            python_executable="python",
+            background_worker_check=lambda: None,
+        )
+
+        manager.sleep_timer(5, "%5")
+
+        self.assertEqual(Path(spawned[0][1]).name, "orchestrator.py")
+        self.assertEqual(spawned[0][2], "_worker")
 
     def test_sleep_timer_rejects_second_active_request_for_same_pane(self) -> None:
         self.manager.sleep_timer(5, "%1")
@@ -457,7 +481,7 @@ class TimerManagerTests(unittest.TestCase):
 
 
 class WorkerSpawnTests(unittest.TestCase):
-    @mock.patch.object(orchestrator.subprocess, "Popen")
+    @mock.patch("orchestrator_timers.subprocess.Popen")
     def test_spawn_worker_uses_direct_subprocess_without_shell_expansion(self, mock_popen) -> None:
         args = [
             "python",
@@ -517,12 +541,12 @@ class CliTests(unittest.TestCase):
 
     @mock.patch.object(orchestrator, "print")
     @mock.patch.object(orchestrator, "TimerManager")
-    def test_main_get_subcommand_uses_current_tmux_pane_when_available(self, mock_manager_cls, mock_print) -> None:
+    def test_main_status_subcommand_uses_current_tmux_pane_when_available(self, mock_manager_cls, mock_print) -> None:
         mock_manager = mock_manager_cls.return_value
         mock_manager.get_timer.return_value = {"active": True, "target": "%9"}
 
         with mock.patch.dict("os.environ", {"TMUX_PANE": "%9"}, clear=True):
-            code = main(["get"])
+            code = main(["status"])
 
         self.assertEqual(code, 0)
         mock_manager.get_timer.assert_called_once_with("%9")
@@ -531,21 +555,70 @@ class CliTests(unittest.TestCase):
 
     @mock.patch.object(orchestrator, "print")
     @mock.patch.object(orchestrator, "TimerManager")
-    def test_main_get_subcommand_lists_all_timers_outside_tmux(self, mock_manager_cls, mock_print) -> None:
+    def test_main_status_subcommand_lists_all_timers_outside_tmux(self, mock_manager_cls, mock_print) -> None:
         mock_manager = mock_manager_cls.return_value
         mock_manager.list_active_timers.return_value = {"active_timers": [], "count": 0}
 
         with mock.patch.dict("os.environ", {}, clear=True):
-            code = main(["get"])
+            code = main(["status"])
 
         self.assertEqual(code, 0)
         mock_manager.list_active_timers.assert_called_once_with(stale_grace_seconds=STALE_TIMER_GRACE_SECONDS)
         mock_manager.get_timer.assert_not_called()
         mock_print.assert_called_once_with('{"active_timers": [], "count": 0}')
 
+    @mock.patch.object(orchestrator, "print")
+    @mock.patch.object(orchestrator, "TimerManager")
+    @mock.patch.object(orchestrator, "TmuxSender")
+    def test_main_compact_subcommand_sends_compact_sequence(self, mock_sender_cls, mock_manager_cls, mock_print) -> None:
+        mock_sender = mock_sender_cls.return_value
+        mock_manager_cls.return_value = mock.Mock()
+
+        code = main(["compact", "--tmux-pane", "%9"])
+
+        self.assertEqual(code, 0)
+        mock_sender.send_compact_sequence.assert_called_once_with(
+            "%9",
+            confirmation_prompt=COMPACT_CONFIRMATION_PROMPT,
+            post_command_delay_seconds=0.5,
+        )
+        mock_print.assert_called_once_with('{"accepted": true, "target": "%9"}')
+
+    @mock.patch.object(orchestrator, "read_context_remaining_percent", return_value=None)
+    def test_main_omits_message_key_when_context_unavailable(self, _mock_context) -> None:
+        with mock.patch.object(orchestrator, "print") as mock_print:
+            with mock.patch.dict("os.environ", {"TMUX_PANE": "%9"}, clear=True):
+                code = main(["status"])
+
+        self.assertEqual(code, 0)
+        mock_print.assert_called_once_with('{"active": false, "target": "%9"}')
+
+    @mock.patch.object(orchestrator, "read_context_remaining_percent", return_value=25)
+    def test_main_adds_warning_message_when_context_below_threshold(self, _mock_context) -> None:
+        with mock.patch.object(orchestrator, "print") as mock_print:
+            with mock.patch.dict("os.environ", {"TMUX_PANE": "%9"}, clear=True):
+                code = main(["status"])
+
+        self.assertEqual(code, 0)
+        payload = json.loads(mock_print.call_args.args[0])
+        self.assertIn("message", payload)
+        self.assertIn("25% remaining", payload["message"])
+        self.assertIn("compact", payload["message"])
+
+    @mock.patch.object(orchestrator, "read_context_remaining_percent", return_value=60)
+    def test_main_sets_message_to_null_when_context_above_threshold(self, _mock_context) -> None:
+        with mock.patch.object(orchestrator, "print") as mock_print:
+            with mock.patch.dict("os.environ", {"TMUX_PANE": "%9"}, clear=True):
+                code = main(["status"])
+
+        self.assertEqual(code, 0)
+        payload = json.loads(mock_print.call_args.args[0])
+        self.assertIn("message", payload)
+        self.assertIsNone(payload["message"])
+
 
 class TmuxSenderTests(unittest.TestCase):
-    @mock.patch.object(orchestrator.subprocess, "run")
+    @mock.patch("orchestrator_tmux.subprocess.run")
     def test_send_prompt_sends_text_then_enter(self, mock_run) -> None:
         sender = TmuxSender(sleep_fn=lambda _seconds: None)
         sender.send_prompt("%9", "continue please")
