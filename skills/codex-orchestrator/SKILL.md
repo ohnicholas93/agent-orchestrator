@@ -1,18 +1,26 @@
 ---
 name: Codex Orchestrator
-description: Use when a Codex agent needs to pause for a fixed duration and resume later in the same tmux pane. Covers the process-based Codex Orchestrator CLI and its sleep, status, cancel, and compact commands.
+description: Use when a Codex agent needs to manage tmux-pane orchestration tasks through the process-based Codex Orchestrator CLI. Covers three core concepts => sleep/cancel, status, and compact.
 ---
 
 # Codex Orchestrator
 
-This skill bundles its own local Python script to pause an agent and resume it later.
+This skill bundles its own local Python script for tmux-pane orchestration tasks. The supported commands fall into three related but distinct modes:
+
+- `sleep` / `cancel`: manage a delayed resume flow for the current tmux pane.
+- `status`: inspect timer state for the current pane or list active timers.
+- `compact`: ask Codex to compact model context in the current pane.
 
 ## When to use
 
 - Agent needs to sleep for a fixed duration and continue later.
-- The current Codex session is running inside tmux and should be resumed automatically.
+- Agent needs to inspect orchestrator timer state.
+- Agent needs to compact model context in the current tmux pane.
+- The current Codex session is running inside tmux.
 
-## Workflow
+## Sleep / Cancel
+
+Use this path when the agent should pause and resume later in the same tmux pane.
 
 1. Run the bundled sleep entrypoint from the same tmux pane as the agent:
 
@@ -24,34 +32,41 @@ This command uses `TMUX_PANE`, records the timer for that pane, and spawns a det
 
 2. After sending the sleep command, stop responding immediately. Do not keep working, add commentary, or send extra messages.
 
-3. If needed, inspect timer status for the current pane:
-
-```bash
-python ~/.agents/skills/codex-orchestrator/scripts/orchestrator.py status
-```
-
-4. If needed, cancel the active timer for the current pane:
-
-```bash
-python ~/.agents/skills/codex-orchestrator/scripts/orchestrator.py cancel
-```
-
-5. If needed, compact model context for the current pane:
-
-```bash
-python ~/.agents/skills/codex-orchestrator/scripts/orchestrator.py compact
-```
-
-6. Wait for the worker to reprompt the same tmux pane with:
+3. Wait for the worker to reprompt the same tmux pane with:
 
 ```text
 [Automated Message] Sleep complete.
 ```
 
-7. When that automated message appears, continue the task as required.
+4. When that automated message appears, continue the task as required.
+
+Note: If needed, cancel the active timer for the current pane:
+
+```bash
+python ~/.agents/skills/codex-orchestrator/scripts/orchestrator.py cancel
+```
+
+## Status
+
+Use this path when the agent only needs timer state. This is separate from both sleeping and compacting.
+
+1. Inspect timer status for the current pane:
+
+```bash
+python ~/.agents/skills/codex-orchestrator/scripts/orchestrator.py status
+```
+
+## Compact
+
+Use this path when the agent needs to compact Codex model context in the current tmux pane. This is not dependent on sleep or status.
+
+1. Trigger compaction for the current pane:
+
+```bash
+python ~/.agents/skills/codex-orchestrator/scripts/orchestrator.py compact
+```
 
 ## Notes
 
 - Only one active timer is allowed per tmux pane.
 - The commands expect to run inside tmux so `TMUX_PANE` is available.
-- For testing, `~/.agents/skills/codex-orchestrator/scripts/orchestrator.py` also accepts `--tmux-pane` to override the pane explicitly.
