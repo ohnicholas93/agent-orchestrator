@@ -7,6 +7,8 @@ from typing import Callable
 
 from orchestrator_constants import (
     COMPACT_COMMAND,
+    COMPACT_FORWARDED_CONTEXT_PREFIX,
+    COMPACT_FORWARDED_CONTEXT_SUFFIX,
     COMPACT_INTERRUPT_KEY,
     TMUX_SEND_SPACING_SECONDS,
 )
@@ -28,12 +30,23 @@ class TmuxSender:
         *,
         confirmation_prompt: str,
         post_command_delay_seconds: float,
+        forwarded_context: str | None = None,
     ) -> None:
         self._send_keys(target, COMPACT_INTERRUPT_KEY)
         self.sleep_fn(self.send_spacing_seconds)
         self.send_prompt(target, COMPACT_COMMAND)
         self.sleep_fn(post_command_delay_seconds)
-        self.send_prompt(target, confirmation_prompt)
+        final_prompt = confirmation_prompt
+        if forwarded_context:
+            separator = ""
+            if confirmation_prompt and not confirmation_prompt[-1].isspace():
+                separator = " "
+            final_prompt = (
+                f"{confirmation_prompt}"
+                f"{separator}"
+                f"{COMPACT_FORWARDED_CONTEXT_PREFIX}{forwarded_context}{COMPACT_FORWARDED_CONTEXT_SUFFIX}"
+            )
+        self.send_prompt(target, final_prompt)
 
     def capture_pane(self, target: str, *, line_count: int) -> str:
         result = self._tmux(

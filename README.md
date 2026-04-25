@@ -16,7 +16,7 @@ Each `sleep` command records timer state for the current `TMUX_PANE`, then spawn
 
 ## Install
 
-This repo keeps bundled skills under [`skills/`](/home/nicholasoh/Workspace/Nitrous/Internal/Projects/codex-orchestrator/skills). The installer creates one symlink per skill under `~/.agents/skills/`.
+This repo keeps bundled skills under [`skills/`](/home/nicholasoh/Workspace/Nitrous/Internal/Projects/codex-orchestrator/skills). The installer creates one symlink per skill under `~/.agents/skills/`, installs a `codex-orchestrator` wrapper under `~/.local/bin/`, and ensures `~/.local/bin` is added to `PATH` idempotently in `~/.bashrc`.
 
 ```bash
 ./installer.sh
@@ -34,9 +34,18 @@ That currently creates:
 ~/.agents/skills/codex-orchestrator -> <repo>/skills/codex-orchestrator
 ~/.agents/skills/privileged-automation -> <repo>/skills/privileged-automation
 ~/.agents/skills/unprivileged-automation -> <repo>/skills/unprivileged-automation
+~/.local/bin/codex-orchestrator -> wrapper script
 ```
 
 If you add more skills later, rerunning `./installer.sh` will link those too. `./installer.sh uninstall` removes only matching symlinks that point back to this repo's bundled skills. The installer also cleans up legacy renamed links from older skill names.
+
+The installer manages its own marked `~/.bashrc` PATH block for `~/.local/bin`. Uninstall is intentionally conservative:
+
+- if `~/.local/bin/codex-orchestrator` still exists, the PATH block is retained
+- if any other entry still exists in `~/.local/bin`, the PATH block is retained
+- the PATH block is removed only when `~/.local/bin` appears unused by the current account
+
+This is a deliberate policy to avoid breaking unrelated user commands in `~/.local/bin`.
 
 Codex detects skill changes automatically, but if an update does not appear in the current session, restart Codex.
 
@@ -89,10 +98,10 @@ skills/unprivileged-automation/scratchpads/template.md
 The CLI keys timers by tmux pane. Only one active timer is allowed per pane.
 
 ```bash
-python skills/codex-orchestrator/scripts/orchestrator.py sleep 600
-python skills/codex-orchestrator/scripts/orchestrator.py status
-python skills/codex-orchestrator/scripts/orchestrator.py cancel
-python skills/codex-orchestrator/scripts/orchestrator.py compact
+codex-orchestrator sleep 600
+codex-orchestrator status
+codex-orchestrator cancel
+codex-orchestrator compact
 ```
 
 `sleep`, `cancel`, and `compact` expect to run inside tmux so `TMUX_PANE` is available. `status` behaves differently:
@@ -101,14 +110,16 @@ python skills/codex-orchestrator/scripts/orchestrator.py compact
 - Inside tmux, `status` reports the pending timer for the current pane, including overdue timers that have not been processed by the worker yet.
 - Outside tmux, `status` lists all pending timers in the state directory for admin use, including overdue timers that have not been processed by the worker yet, and deletes timers only after they have been overdue for more than 10 seconds.
 - `compact` first sends `Esc` to interrupt current work, then submits `/compact`, then sends an automated confirmation message.
+- `compact --forwarded-context "..."` appends a reminder payload to that confirmation so the post-compaction model can recover task context.
 
 For testing, you can override the pane manually:
 
 ```bash
-python skills/codex-orchestrator/scripts/orchestrator.py sleep 600 --tmux-pane %3
-python skills/codex-orchestrator/scripts/orchestrator.py status --tmux-pane %3
-python skills/codex-orchestrator/scripts/orchestrator.py cancel --tmux-pane %3
-python skills/codex-orchestrator/scripts/orchestrator.py compact --tmux-pane %3
+codex-orchestrator sleep 600 --tmux-pane %3
+codex-orchestrator status --tmux-pane %3
+codex-orchestrator cancel --tmux-pane %3
+codex-orchestrator compact --tmux-pane %3
+codex-orchestrator compact --tmux-pane %3 --forwarded-context "resume from the installer task"
 ```
 
 ## Behavior
@@ -119,7 +130,7 @@ python skills/codex-orchestrator/scripts/orchestrator.py compact --tmux-pane %3
 4. `status` reports the pending timer for the current pane when run inside tmux, including overdue timers awaiting worker delivery.
 5. `status` lists all pending timers when run outside tmux, including overdue timers awaiting worker delivery, and cleans up timers that have been stale for more than 10 seconds.
 6. `cancel` cancels the active timer for the current pane.
-7. `compact` sends `/compact` and then an automated context-compacted message into the same pane.
+7. `compact` sends `/compact` and then an automated context-compacted message into the same pane, optionally followed by forwarded reminder text.
 8. When the timer expires, the worker sends the wake prompt into that pane and clears its state.
 
 State files live under `$XDG_RUNTIME_DIR/codex-orchestrator` when available, otherwise under the system temp directory.
@@ -129,25 +140,25 @@ State files live under `$XDG_RUNTIME_DIR/codex-orchestrator` when available, oth
 Start a sleep timer:
 
 ```bash
-python skills/codex-orchestrator/scripts/orchestrator.py sleep 300
+codex-orchestrator sleep 300
 ```
 
 Check it:
 
 ```bash
-python skills/codex-orchestrator/scripts/orchestrator.py status
+codex-orchestrator status
 ```
 
 List all active timers outside tmux:
 
 ```bash
-env -u TMUX_PANE python skills/codex-orchestrator/scripts/orchestrator.py status
+env -u TMUX_PANE codex-orchestrator status
 ```
 
 Cancel it:
 
 ```bash
-python skills/codex-orchestrator/scripts/orchestrator.py cancel
+codex-orchestrator cancel
 ```
 
 ## Tests

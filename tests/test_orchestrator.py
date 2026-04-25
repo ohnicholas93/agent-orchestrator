@@ -21,6 +21,8 @@ MODULE_SPEC.loader.exec_module(orchestrator)
 CONTINUE_PROMPT = orchestrator.CONTINUE_PROMPT
 STALE_TIMER_GRACE_SECONDS = orchestrator.STALE_TIMER_GRACE_SECONDS
 COMPACT_CONFIRMATION_PROMPT = orchestrator.COMPACT_CONFIRMATION_PROMPT
+COMPACT_FORWARDED_CONTEXT_PREFIX = orchestrator.COMPACT_FORWARDED_CONTEXT_PREFIX
+COMPACT_FORWARDED_CONTEXT_SUFFIX = orchestrator.COMPACT_FORWARDED_CONTEXT_SUFFIX
 OrchestratorError = orchestrator.OrchestratorError
 TimerManager = orchestrator.TimerManager
 TimerState = orchestrator.TimerState
@@ -581,6 +583,25 @@ class CliTests(unittest.TestCase):
             "%9",
             confirmation_prompt=COMPACT_CONFIRMATION_PROMPT,
             post_command_delay_seconds=0.5,
+            forwarded_context=None,
+        )
+        mock_print.assert_called_once_with('{"accepted": true, "target": "%9"}')
+
+    @mock.patch.object(orchestrator, "print")
+    @mock.patch.object(orchestrator, "TimerManager")
+    @mock.patch.object(orchestrator, "TmuxSender")
+    def test_main_compact_subcommand_passes_forwarded_context(self, mock_sender_cls, mock_manager_cls, mock_print) -> None:
+        mock_sender = mock_sender_cls.return_value
+        mock_manager_cls.return_value = mock.Mock()
+
+        code = main(["compact", "--tmux-pane", "%9", "--forwarded-context", "resume with the parser bug"])
+
+        self.assertEqual(code, 0)
+        mock_sender.send_compact_sequence.assert_called_once_with(
+            "%9",
+            confirmation_prompt=COMPACT_CONFIRMATION_PROMPT,
+            post_command_delay_seconds=0.5,
+            forwarded_context="resume with the parser bug",
         )
         mock_print.assert_called_once_with('{"accepted": true, "target": "%9"}')
 
@@ -639,6 +660,7 @@ class TmuxSenderTests(unittest.TestCase):
                 "%9",
                 confirmation_prompt="[Automated Message] Context compacted.",
                 post_command_delay_seconds=0.5,
+                forwarded_context=None,
             )
 
         self.assertEqual(
@@ -652,6 +674,52 @@ class TmuxSenderTests(unittest.TestCase):
             ],
         )
         self.assertEqual(sleep_calls, [0.5, 0.5, 0.5, 0.5])
+
+    def test_send_compact_sequence_appends_forwarded_context_to_confirmation(self) -> None:
+        sender = TmuxSender(sleep_fn=lambda _seconds: None)
+
+        with mock.patch.object(sender, "_tmux") as mock_tmux:
+            sender.send_compact_sequence(
+                "%9",
+                confirmation_prompt="[Automated Message] Context compacted.",
+                post_command_delay_seconds=0.5,
+                forwarded_context="continue with the installer cleanup",
+            )
+
+        self.assertEqual(
+            mock_tmux.call_args_list[-2].args[0],
+            [
+                "send-keys",
+                "-t",
+                "%9",
+                "[Automated Message] Context compacted. "
+                f"{COMPACT_FORWARDED_CONTEXT_PREFIX}continue with the installer cleanup"
+                f"{COMPACT_FORWARDED_CONTEXT_SUFFIX}",
+            ],
+        )
+
+    def test_send_compact_sequence_does_not_duplicate_separator_for_prompt_with_trailing_space(self) -> None:
+        sender = TmuxSender(sleep_fn=lambda _seconds: None)
+
+        with mock.patch.object(sender, "_tmux") as mock_tmux:
+            sender.send_compact_sequence(
+                "%9",
+                confirmation_prompt="[Automated Message] Context compacted. ",
+                post_command_delay_seconds=0.5,
+                forwarded_context="continue with the installer cleanup",
+            )
+
+        self.assertEqual(
+            mock_tmux.call_args_list[-2].args[0],
+            [
+                "send-keys",
+                "-t",
+                "%9",
+                "[Automated Message] Context compacted. "
+                f"{COMPACT_FORWARDED_CONTEXT_PREFIX}continue with the installer cleanup"
+                f"{COMPACT_FORWARDED_CONTEXT_SUFFIX}",
+            ],
+        )
 
 
 if __name__ == "__main__":

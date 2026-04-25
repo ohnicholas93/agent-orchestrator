@@ -9,6 +9,8 @@ from pathlib import Path
 
 from orchestrator_constants import (
     COMPACT_CONFIRMATION_PROMPT,
+    COMPACT_FORWARDED_CONTEXT_PREFIX,
+    COMPACT_FORWARDED_CONTEXT_SUFFIX,
     COMPACT_POST_COMMAND_DELAY_SECONDS,
     CONTEXT_WARNING_THRESHOLD_PERCENT,
     CONTINUE_PROMPT,
@@ -75,6 +77,10 @@ def build_parser() -> argparse.ArgumentParser:
     compact_parser = subparsers.add_parser("compact", help="Ask Codex to compact context in the target pane.")
     compact_parser.add_argument("--tmux-pane")
     compact_parser.add_argument("--confirmation-prompt", default=COMPACT_CONFIRMATION_PROMPT)
+    compact_parser.add_argument(
+        "--forwarded-context",
+        help="Optional text to append after the compaction confirmation so it is visible post-compaction.",
+    )
     compact_parser.add_argument("--post-command-delay-seconds", type=float, default=COMPACT_POST_COMMAND_DELAY_SECONDS)
 
     worker_parser = subparsers.add_parser("_worker", help=argparse.SUPPRESS)
@@ -119,6 +125,7 @@ def main(argv: list[str] | None = None) -> int:
                 pane_for_message,
                 confirmation_prompt=args.confirmation_prompt,
                 post_command_delay_seconds=args.post_command_delay_seconds,
+                forwarded_context=args.forwarded_context,
             )
             payload = {"accepted": True, "target": pane_for_message}
         elif args.command == "_worker":
@@ -141,4 +148,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
