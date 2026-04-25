@@ -78,7 +78,9 @@ def build_parser() -> argparse.ArgumentParser:
     compact_parser.add_argument("--tmux-pane")
     compact_parser.add_argument("--confirmation-prompt", default=COMPACT_CONFIRMATION_PROMPT)
     compact_parser.add_argument(
-        "--forwarded-context",
+        "-m",
+        "--message",
+        dest="forwarded_context",
         help="Optional text to append after the compaction confirmation so it is visible post-compaction.",
     )
     compact_parser.add_argument("--post-command-delay-seconds", type=float, default=COMPACT_POST_COMMAND_DELAY_SECONDS)

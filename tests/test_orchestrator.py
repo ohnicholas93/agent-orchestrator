@@ -594,7 +594,7 @@ class CliTests(unittest.TestCase):
         mock_sender = mock_sender_cls.return_value
         mock_manager_cls.return_value = mock.Mock()
 
-        code = main(["compact", "--tmux-pane", "%9", "--forwarded-context", "resume with the parser bug"])
+        code = main(["compact", "--tmux-pane", "%9", "--message", "resume with the parser bug"])
 
         self.assertEqual(code, 0)
         mock_sender.send_compact_sequence.assert_called_once_with(

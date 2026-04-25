@@ -110,7 +110,7 @@ codex-orchestrator compact
 - Inside tmux, `status` reports the pending timer for the current pane, including overdue timers that have not been processed by the worker yet.
 - Outside tmux, `status` lists all pending timers in the state directory for admin use, including overdue timers that have not been processed by the worker yet, and deletes timers only after they have been overdue for more than 10 seconds.
 - `compact` first sends `Esc` to interrupt current work, then submits `/compact`, then sends an automated confirmation message.
-- `compact --forwarded-context "..."` appends a reminder payload to that confirmation so the post-compaction model can recover task context.
+- `compact -m "..."` or `compact --message "..."` appends a reminder payload to that confirmation so the post-compaction model can recover task context.
 
 For testing, you can override the pane manually:
 
@@ -119,7 +119,7 @@ codex-orchestrator sleep 600 --tmux-pane %3
 codex-orchestrator status --tmux-pane %3
 codex-orchestrator cancel --tmux-pane %3
 codex-orchestrator compact --tmux-pane %3
-codex-orchestrator compact --tmux-pane %3 --forwarded-context "resume from the installer task"
+codex-orchestrator compact --tmux-pane %3 --message "resume from the installer task"
 ```
 
 ## Behavior

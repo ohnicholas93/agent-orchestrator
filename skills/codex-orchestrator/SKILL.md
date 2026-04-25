@@ -66,10 +66,10 @@ Use this path when the agent needs to compact Codex model context in the current
 codex-orchestrator compact
 ```
 
-Note: You are encouraged to hand a reminder to your post-compaction model context by using the `--forwarded-context` CLI argument:
+Note: You are encouraged to hand a reminder to your post-compaction model context by using the `-m` or `--message` CLI argument:
 
 ```bash
-codex-orchestrator compact --forwarded-context "current situation, remaining things to do, scratchpad path, etc"
+codex-orchestrator compact --message "current situation, remaining things to do, scratchpad path, etc"
 ```
 
 ## Notes
